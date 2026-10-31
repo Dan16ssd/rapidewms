@@ -1,0 +1,27 @@
+{
+  "name": "rapidewms",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:lan": "vite --host --mode lan --port 5443",
+    "share": "cloudflared tunnel --url http://localhost:5173",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:db": "node scripts/test-db.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.118.0",
+    "html5-qrcode": "^2.3.8",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.9",
+    "jszip": "^3.10.2",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.13",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "vite": "^8.3.5"
+  }
+}

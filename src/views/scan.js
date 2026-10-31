@@ -1,0 +1,3 @@
+export default function scan() {
+  return `<div class="card"><div class="row"><select id="mode"><option value="in">Receive (+ stock)</option><option value="out">Ship (− stock)</option><option value="look">Look up only</option></select><input id="sq" type="number" min="1" value="1" placeholder="Quantity per scan"></div><div class="row mt"><button class="b" data-act="camOn">📷 Start camera</button><button class="g" data-act="camOff">■ Stop camera</button></div><div id="rd"></div><input id="man" class="mt" placeholder="Or type / use a USB or Bluetooth scanner, then press Enter" data-input="manualScan"><div id="res" class="mt"></div></div>`;
+}
