@@ -34,17 +34,11 @@ Needs Node.js. First time: `npm install`.
 | Command | What it does | Open |
 |---|---|---|
 | `npm run dev` | Dev server on this PC | http://localhost:5173 |
-| `npm run dev:lan` | HTTPS on your Wi-Fi so phones can use the camera (self-signed certificate, so tap "Advanced → Proceed") | https://<this-PC-Wi-Fi-IP>:5443 (printed as "Network" in the terminal) |
-| `npm run share` | Public HTTPS link through a Cloudflare quick tunnel; run it **alongside** `npm run dev` | Printed in the terminal as `https://….trycloudflare.com` |
 | `npm run build` | Production build into `dist/` | — |
 | `npm run preview` | Serve the production build locally | — |
 | `npm run test:db` | Tests the database schema in an in-memory Postgres | — |
 
-**About the share link:**
-- It only works while this PC is on and both `dev` and `share` are running.
-- The address changes every time `share` restarts.
-- Anyone with the link can open it. Only share it with the team.
-- In demo mode each person's data stays in their own browser, so teammates **don't see each other's stock**.
+**Online demo:** https://dan16ssd.github.io/rapidewms/. It rebuilds automatically on every push to `master` (`.github/workflows/pages.yml`). It runs in demo mode, so each person's data stays in their own browser and teammates **don't see each other's stock**.
 
 ---
 
@@ -98,7 +92,7 @@ The app picks its backend automatically in `src/data/store.js`:
 | USB/Bluetooth scanner (types the code + Enter) | Works: receive, ship, look up, not-enough-stock refusal, unknown-code prompt all verified |
 | Camera decoder on a real EAN-13 barcode image (5449000000996) | Read back exactly |
 | Camera allowed on `localhost` | Yes |
-| Live camera on a real phone | **Not tested yet.** Use `npm run dev:lan` or `npm run share` and try it |
+| Live camera on a real phone | **Not tested yet.** Open the online demo on a phone and try it |
 
 Formats: EAN-13, UPC, Code 128, QR and others supported by html5-qrcode. Laptop webcams often can't focus on thin 1D barcodes; phones and QR codes work better.
 
@@ -108,7 +102,8 @@ Formats: EAN-13, UPC, Code 128, QR and others supported by html5-qrcode. Laptop 
 
 ```
 index.html                 App shell (header, nav, main, dialog, toast)
-vite.config.js             HTTPS for dev:lan; allows *.trycloudflare.com for share
+vite.config.js             Vite settings
+.github/workflows/pages.yml  Builds and publishes the online demo
 src/main.js                Startup, routing (#dash, #inv…), render, all button actions
 src/auth.js                Sign in / sign up / name-your-shop screens
 src/scanner.js             Camera (html5-qrcode) + scan handling
@@ -200,7 +195,7 @@ The full written plan is kept outside the repo; this table is the summary.
 - Trial / read-only billing logic.
 - Local demo mode.
 - Scanner verified with a keyboard scanner and a barcode image.
-- Wi-Fi HTTPS and Cloudflare share link.
+- Online demo on GitHub Pages.
 
 **Not done yet:**
 - Connect a real Supabase project.
@@ -219,7 +214,7 @@ The full written plan is kept outside the repo; this table is the summary.
 
 ## 10. Next steps
 
-1. **Phone camera test:** open the share link on an Android and an iPhone and scan real products.
+1. **Phone camera test:** open the online demo on an Android and an iPhone and scan real products.
 2. **Shared team testing:** create the Supabase project (section 3) so the team works on the same stock.
 3. **Permanent link:**
    - Run `npx wrangler login` yourself.

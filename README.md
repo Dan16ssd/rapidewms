@@ -2,6 +2,8 @@
 
 Inventory and warehouse app for small shops in Laos. Vanilla JS + Vite frontend, Supabase (Postgres, Auth, Realtime) backend.
 
+**Online demo:** https://dan16ssd.github.io/rapidewms/ (demo mode: data stays in your browser).
+
 ## First-time setup
 
 1. Create a free project at https://supabase.com (region: Singapore is closest to Laos).
