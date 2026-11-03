@@ -1,4 +1,5 @@
 import { $, E, toast } from "./lib/util.js";
+import { t, errText } from "./i18n/index.js";
 import { state, adjust } from "./data/store.js";
 
 let scn = null,
@@ -32,7 +33,7 @@ export async function cam(on) {
     );
   } catch {
     scn = null;
-    toast("Camera blocked. Allow camera access for this site in your browser settings.", true);
+    toast(t("scan.blocked"), true);
   }
 }
 
@@ -51,16 +52,23 @@ export async function onScan(c) {
     q = Math.max(1, +$("#sq").value || 1);
   if (!it)
     return log(
-      `<span class="warn">Unknown code <b>${E(c)}</b></span> <button class="g" data-act="addItem" data-code="${E(c)}">Add as new product</button>`,
+      `<span class="warn">${t("scan.unknown", { code: `<b>${E(c)}</b>` })}</span> <button class="g" data-act="addItem" data-code="${E(c)}">${t("scan.addNew")}</button>`,
     );
-  if (m == "look") return log(`${E(it.name)} (${E(it.sku)}) → <b>${+it.qty}</b> in stock`);
+  if (m == "look")
+    return log(t("scan.inStock", { name: E(it.name), sku: E(it.sku), qty: `<b>${+it.qty}</b>` }));
   try {
     await adjust(it.id, m == "in" ? q : -q, "scan");
     const now = state.items.find((i) => i.id == it.id);
     log(
-      `<span class="${m}">✔ ${E(it.name)} (${E(it.sku)}) ${m == "in" ? "+" : "−"}${q} → <b>${+now.qty}</b> in stock</span>`,
+      `<span class="${m}">${t("scan.ok", {
+        name: E(it.name),
+        sku: E(it.sku),
+        sign: m == "in" ? "+" : "−",
+        q,
+        qty: `<b>${+now.qty}</b>`,
+      })}</span>`,
     );
   } catch (e) {
-    log(`<span class="warn">${E(it.sku)}: ${E(e.message)}</span>`);
+    log(`<span class="warn">${E(it.sku)}: ${E(errText(e))}</span>`);
   }
 }

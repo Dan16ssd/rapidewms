@@ -1,5 +1,6 @@
-// Sign in / sign up / first-shop screens.
+// Sign in / sign up / password reset / first-shop screens.
 import { $, E } from "./lib/util.js";
+import { t, errText } from "./i18n/index.js";
 import { sb, configured, createShop, signOut } from "./data/store.js";
 
 const shell = (inner) => {
@@ -8,40 +9,116 @@ const shell = (inner) => {
   $("#auth").innerHTML = `<div class="auth"><div class="brand" style="margin-bottom:18px"><h1>RAPIDÉ<em>WMS</em></h1></div>${inner}</div>`;
 };
 
+// Where the reset email sends the user back to. BASE_URL keeps this right under
+// a sub-path deploy (GitHub Pages serves the app from /rapidewms/).
+const appUrl = () => location.origin + import.meta.env.BASE_URL;
+
+// Disable the submit button, clear the error line, run fn, re-enable. Returns
+// the Supabase error message, or "" on success.
+async function submit(formEl, errEl, fn) {
+  const btn = formEl.querySelector(".b");
+  btn.disabled = true;
+  $(errEl).textContent = "";
+  try {
+    const { error } = await fn(Object.fromEntries(new FormData(formEl)));
+    // Auth provider messages come back in English; show them as given.
+    if (error) $(errEl).textContent = error.message;
+    return error ? error.message : "";
+  } catch (e) {
+    $(errEl).textContent = errText(e);
+    return errText(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 export function showAuth(mode = "in", note = "") {
   const up = mode == "up";
-  shell(`<form class="card" id="authf"><h2>${up ? "Create your account" : "Sign in"}</h2><p class="mut">${
-    up ? "14-day free trial. No card needed." : "Inventory for your shop, on every device."
-  }</p><label>Email<input name="email" type="email" autocomplete="email" required></label><label>Password<input name="password" type="password" minlength="8" autocomplete="${
+  shell(`<form class="card" id="authf"><h2>${t(up ? "auth.createAcct" : "auth.signIn")}</h2><p class="mut">${t(
+    up ? "auth.trialNote" : "auth.tagline",
+  )}</p><label>${t("auth.email")}<input name="email" type="email" autocomplete="email" required></label><label>${t(
+    "auth.password",
+  )}<input name="password" type="password" minlength="8" autocomplete="${
     up ? "new-password" : "current-password"
-  }" required></label>${note ? `<p class="mut">${E(note)}</p>` : ""}<p class="err" id="aerr"></p><button class="b" style="width:100%;justify-content:center">${
-    up ? "Create account" : "Sign in"
-  }</button><p class="mut">${up ? "Already have an account?" : "New here?"} <button type="button" class="switch" id="aswitch">${
-    up ? "Sign in" : "Create an account"
-  }</button></p></form>`);
+  }" required></label>${
+    up
+      ? ""
+      : `<p class="mut" style="margin-top:-4px"><button type="button" class="switch" id="aforgot">${t(
+          "auth.forgot",
+        )}</button></p>`
+  }${note ? `<p class="mut">${E(note)}</p>` : ""}<p class="err" id="aerr"></p><button class="b" style="width:100%;justify-content:center">${t(
+    up ? "auth.createAcct" : "auth.signIn",
+  )}</button><p class="mut">${t(up ? "auth.have" : "auth.new")} <button type="button" class="switch" id="aswitch">${t(
+    up ? "auth.toSignIn" : "auth.toSignUp",
+  )}</button></p></form>`);
   $("#aswitch").onclick = () => showAuth(up ? "in" : "up");
+  if (!up) $("#aforgot").onclick = () => showReset();
   $("#authf").onsubmit = async (ev) => {
     ev.preventDefault();
-    const f = Object.fromEntries(new FormData(ev.target)),
-      btn = ev.target.querySelector(".b");
-    btn.disabled = true;
-    $("#aerr").textContent = "";
-    const { data, error } = up
-      ? await sb.auth.signUp({ email: f.email, password: f.password })
-      : await sb.auth.signInWithPassword({ email: f.email, password: f.password });
-    btn.disabled = false;
-    if (error) return ($("#aerr").textContent = error.message);
+    let data;
+    const msg = await submit(ev.target, "#aerr", async (f) => {
+      const r = up
+        ? await sb.auth.signUp({ email: f.email, password: f.password })
+        : await sb.auth.signInWithPassword({ email: f.email, password: f.password });
+      data = r.data;
+      return r;
+    });
     // With email confirmation on, sign-up returns no session yet.
-    if (up && !data.session) showAuth("in", "Check your email to confirm your account, then sign in.");
+    if (!msg && up && !data.session) showAuth("in", t("auth.confirmEmail"));
     // otherwise onAuthStateChange in main.js takes over
   };
 }
 
+// Step 1 of recovery: ask Supabase to email a reset link.
+export function showReset() {
+  shell(`<form class="card" id="resetf"><h2>${t("auth.resetTitle")}</h2><p class="mut">${t(
+    "auth.resetNote",
+  )}</p><label>${t(
+    "auth.email",
+  )}<input name="email" type="email" autocomplete="email" required></label><p class="err" id="rerr"></p><button class="b" style="width:100%;justify-content:center">${t(
+    "auth.resetSend",
+  )}</button><p class="mut"><button type="button" class="switch" id="rback">${t(
+    "auth.backToSignIn",
+  )}</button></p></form>`);
+  $("#rback").onclick = () => showAuth("in");
+  $("#resetf").onsubmit = async (ev) => {
+    ev.preventDefault();
+    // Supabase deliberately reports success for an unknown address, so this
+    // never reveals whether an email is registered.
+    const msg = await submit(ev.target, "#rerr", (f) =>
+      sb.auth.resetPasswordForEmail(f.email, { redirectTo: appUrl() }),
+    );
+    if (!msg) showAuth("in", t("auth.resetSent"));
+  };
+}
+
+// Step 2: the link came back with a recovery session, so set the new password.
+export function showNewPassword(onDone) {
+  shell(`<form class="card" id="newpf"><h2>${t("auth.newTitle")}</h2><p class="mut">${t(
+    "auth.newNote",
+  )}</p><label>${t(
+    "auth.newPassword",
+  )}<input name="password" type="password" minlength="8" autocomplete="new-password" required></label><p class="err" id="nerr"></p><button class="b" style="width:100%;justify-content:center">${t(
+    "auth.newSave",
+  )}</button></form>`);
+  $("#newpf").onsubmit = async (ev) => {
+    ev.preventDefault();
+    const msg = await submit(ev.target, "#nerr", (f) => sb.auth.updateUser({ password: f.password }));
+    if (!msg) onDone();
+  };
+}
+
 export function showCreateShop(onDone) {
-  shell(`<form class="card" id="shopf"><h2>Name your shop</h2><p class="mut">You can invite staff later.</p><label>Shop name<input name="name" required maxlength="80"></label><p class="err" id="serr"></p><button class="b" style="width:100%;justify-content:center">Start free trial</button>${
+  shell(`<form class="card" id="shopf"><h2>${t("auth.nameShop")}</h2><p class="mut">${t(
+    "auth.staffLater",
+  )}</p><label>${t(
+    "auth.shopName",
+  )}<input name="name" required maxlength="80"></label><p class="err" id="serr"></p><button class="b" style="width:100%;justify-content:center">${t(
+    "auth.startTrial",
+  )}</button>${
     configured
-      ? `<p class="mut"><button type="button" class="switch" id="sout">Sign out</button></p>`
-      : `<p class="mut">Local demo mode: data stays in this browser.</p>`
+      ? `<p class="mut"><button type="button" class="switch" id="sout">${t("sys.signOut")}</button></p>`
+      : `<p class="mut">${t("auth.localNote")}</p>`
   }</form>`);
   if (configured) $("#sout").onclick = () => signOut();
   $("#shopf").onsubmit = async (ev) => {
@@ -52,7 +129,7 @@ export function showCreateShop(onDone) {
       await createShop(new FormData(ev.target).get("name"));
       onDone();
     } catch (e) {
-      $("#serr").textContent = e.message;
+      $("#serr").textContent = errText(e);
       btn.disabled = false;
     }
   };

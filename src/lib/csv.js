@@ -42,8 +42,23 @@ export function csvToItems(text) {
           qty: col("qty"),
           min_qty: col("min"),
           cost: col("cost"),
+          price: col("price", "sell"),
+          price_wholesale: col("wholesale"),
+          wholesale_min_qty: col("wholesale min"),
         }
-      : { sku: 0, name: 1, category: 2, barcode: -1, qty: 3, min_qty: 4, cost: 5 },
+      : // Headerless layout: new columns are appended, so old files keep working.
+        {
+          sku: 0,
+          name: 1,
+          category: 2,
+          barcode: -1,
+          qty: 3,
+          min_qty: 4,
+          cost: 5,
+          price: 6,
+          price_wholesale: 7,
+          wholesale_min_qty: 8,
+        },
     get = (r, k) => (ix[k] >= 0 ? (r[ix[k]] ?? "").trim() : "");
   return rows
     .map((r) => ({
@@ -54,6 +69,9 @@ export function csvToItems(text) {
       qty: +get(r, "qty") || 0,
       min_qty: +get(r, "min_qty") || 0,
       cost: +get(r, "cost") || 0,
+      price: +get(r, "price") || 0,
+      price_wholesale: +get(r, "price_wholesale") || 0,
+      wholesale_min_qty: +get(r, "wholesale_min_qty") || 0,
     }))
     .filter((x) => x.sku && x.name);
 }

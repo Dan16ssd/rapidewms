@@ -2,11 +2,27 @@
 import { toCsv } from "./csv.js";
 import { dt, download } from "./util.js";
 
+// Headers and type words stay English on purpose: csvToItems() matches these
+// header names when a shop re-imports its own export, and jsPDF has no Lao font
+// yet. Localise both together once the font is bundled.
 export const sets = (s) => {
-  const sku = (id) => s.items.find((i) => i.id == id)?.sku ?? "";
+  const bySku = new Map(s.items.map((i) => [i.id, i.sku])),
+    sku = (id) => bySku.get(id) ?? "";
   return {
     Inventory: [
-      ["SKU", "Name", "Category", "Barcode", "Qty", "Min", "Cost (LAK)", "Value (LAK)"],
+      [
+        "SKU",
+        "Name",
+        "Category",
+        "Barcode",
+        "Qty",
+        "Min",
+        "Cost (LAK)",
+        "Price (LAK)",
+        "Wholesale (LAK)",
+        "Wholesale min",
+        "Value (LAK)",
+      ],
       ...s.items.map((i) => [
         i.sku,
         i.name,
@@ -15,6 +31,9 @@ export const sets = (s) => {
         +i.qty,
         +i.min_qty,
         +i.cost,
+        +i.price || 0,
+        +i.price_wholesale || 0,
+        +i.wholesale_min_qty || 0,
         i.qty * i.cost,
       ]),
     ],

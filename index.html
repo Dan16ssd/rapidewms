@@ -25,8 +25,9 @@
             <div class="clk"><span id="shopname"></span> · <span id="clk"></span></div>
           </div>
         </div>
-        <button class="btn" data-act="scanView">▥ Scanner</button
-        ><button class="btn" data-act="zip">⬇ Export .ZIP</button>
+        <button class="btn" data-act="scanView" data-i18n="hdr.scanner">▥ Scanner</button
+        ><button class="btn" data-act="zip" data-i18n="hdr.zip">⬇ Export .ZIP</button
+        ><button class="btn" data-act="lang" data-i18n="hdr.lang">ລາວ / EN</button>
       </header>
       <div class="wrap">
         <div>
@@ -35,7 +36,7 @@
         </div>
         <main id="main"></main>
       </div>
-      <button id="menu" class="b" onclick="scrollTo({ top: 0, behavior: 'smooth' })">☰ Menu</button>
+      <button id="menu" class="b" data-act="top" data-i18n="hdr.menu">☰ Menu</button>
     </div>
     <dialog id="dlg"></dialog>
     <div id="toast" role="status"></div>

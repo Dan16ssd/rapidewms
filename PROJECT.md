@@ -37,6 +37,9 @@ Needs Node.js. First time: `npm install`.
 | `npm run build` | Production build into `dist/` | — |
 | `npm run preview` | Serve the production build locally | — |
 | `npm run test:db` | Tests the database schema in an in-memory Postgres | — |
+| `npm run check-i18n` | Checks the Lao and English text are complete and in step | — |
+| `npm run test:unit` | Tests front-end logic with no browser needed (table paging) | — |
+| `npm test` | Runs all three checks, the same as the build does | — |
 
 **Online demo:** https://dan16ssd.github.io/rapidewms/. It rebuilds automatically on every push to `master` (`.github/workflows/pages.yml`). It runs in demo mode, so each person's data stays in their own browser and teammates **don't see each other's stock**.
 
@@ -49,7 +52,7 @@ The app picks its backend automatically in `src/data/store.js`:
 | | Local demo mode (current) | Supabase mode |
 |---|---|---|
 | Turned on when | `.env` has no Supabase keys | `.env` has `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` |
-| Accounts | None, straight into the app | Email + password sign up / sign in |
+| Accounts | None, straight into the app | Email + password sign up / sign in, with password reset by email |
 | Data stored in | This browser's `localStorage` (`rapidewms.local`) | Postgres in the cloud |
 | Shared between devices | No (only between tabs of the same browser) | Yes, with live updates |
 | Rules (no negative stock, unique SKU, etc.) | Same rules, enforced in `src/data/local.js` | Enforced in the database |
@@ -69,12 +72,14 @@ The app picks its backend automatically in `src/data/store.js`:
 | Screen | What it does |
 |---|---|
 | **Dashboard** | Stock value, units, recent in/out movement chart, low-stock banner |
-| **Inventory** | Add, edit and delete products; search; +/− stock buttons. Product fields: SKU, name, category, barcode, quantity, minimum, unit cost (₭) |
+| **Inventory** | Add, edit and delete products; search; +/− stock buttons. Product fields: SKU, name, category, barcode, quantity, minimum, unit cost, **sell price, wholesale price and the quantity wholesale starts at** (all in ₭) |
 | **Orders** | Inbound and outbound orders; completing an order updates stock, and an order can only be completed once |
 | **Scanner** | Camera or USB/Bluetooth scanner. Modes: receive, ship, look up. Matches SKU (any case) or barcode. Unknown code → "Add as new product" |
 | **Reports & export** | Inventory, orders and movements as PDF, Excel or CSV; currency converter (live rates) |
 | **Automation** | Low-stock alerts; auto-reorder creates an inbound order for (minimum × 2 − stock) when stock drops below minimum and no inbound order is pending |
-| **Shop & backup** | Plan and trial status, full ZIP backup, CSV product import, erase all data (owner only, must type ERASE) |
+| **Shop & backup** | Plan and trial status, language, full ZIP backup, CSV product import, erase all data (owner only, must type ERASE) |
+
+**Language:** the whole interface is in **Lao and English**. A Lao-language browser gets Lao automatically; the header button and the setting in Shop & backup switch it instantly, and the choice is remembered. Prices show as whole kip (₭12,000, not ₭12,000.00). Export column headers stay English so a shop can re-import its own CSV, and because PDF export has no Lao font yet.
 
 **Business rules:**
 - Stock can never go below zero ("Not enough stock: SKU has N").
@@ -116,14 +121,18 @@ src/lib/util.js            Escaping, formatting, toast, form dialog, download
 src/lib/csv.js             CSV parse/write, product import
 src/lib/export.js          PDF / Excel / CSV / ZIP export (libraries load on demand)
 src/views/*.js             One file per screen: dash, inv, ord, scan, rep, auto, sys
+src/i18n/{en,lo,index}.js  All interface text + the t() lookup
 supabase/migrations/001_schema.sql   Tables, row-level security, stock functions
 scripts/test-db.mjs        Database tests (PGlite)
+scripts/check-i18n.mjs     Translation completeness + hardcoded-text check
 ```
 
 **Conventions:**
 - Buttons use `data-act="name"`; inputs use `data-input="name"`. Handlers are in the `A` and `INPUT` maps in `src/main.js`.
 - Always escape user data with `E()` before putting it into HTML.
 - Stock only changes through `adjust`, `saveItem` or `completeOrder`, never by editing `qty` directly.
+- **Never write interface text in a view.** Add a key to `src/i18n/en.js` and `lo.js` and call `t("key")`, or `tn("key", n)` when a count changes the wording. `npm run check-i18n` fails the build otherwise.
+- Errors carry a key, not a sentence: `fail("err.stock", { sku, qty })` in `local.js`, mapped from Postgres messages in `remote.js` `friendly()`, and shown with `errText(e)`. This keeps messages translatable.
 
 ---
 
@@ -188,37 +197,39 @@ The full written plan is kept outside the repo; this table is the summary.
 ### Progress
 
 **Done:**
-- Vite project and module split.
+- Vite project and module split; code on GitHub with an auto-deploying demo.
 - Database schema with row-level security, stock functions and 20 passing tests.
 - Accounts and shop creation (code ready, needs Supabase keys).
 - Firestore and WebSocket removed.
 - Trial / read-only billing logic.
 - Local demo mode.
 - Scanner verified with a keyboard scanner and a barcode image.
-- Online demo on GitHub Pages.
+- **Lao + English interface**, with a build-time check that keeps the two in step.
+- **Sell price, wholesale price and wholesale threshold** on every product, through the form, CSV import and export.
+- Mobile table row labels fixed (they were lost when the single file was split into modules).
+- **Password reset by email** — request a link, set a new password, and the app will not let a recovery session walk past that screen into the shop.
+- **Large shops load completely.** Reads are paged, so a shop is no longer cut off at the server's 1000-row response cap; when orders or movement history does hit the app's own ceiling, the screen says so instead of quietly showing part of it.
+- First front-end tests (`npm run test:unit`, 12 checks on the paging logic), and CI now also runs them, `npm audit` and the build.
 
-**Not done yet:**
+**Not done yet** (the POS plan covers these; see section 9's blocks):
+- The till itself: sell screen, payments, receipts, customers and credit, shifts.
+- Offline write queue and PWA install.
+- Automatic backups, and applying migrations with the Supabase CLI against a separate staging project rather than pasting SQL into the dashboard.
+- Error tracking (Sentry), so a bug in a shop reaches us without a phone call.
+- Showing **who** made each stock change: `movements.created_by` is recorded but never displayed.
+- Lao font in PDF exports, and receipt printing.
 - Connect a real Supabase project.
-- Offline write queue.
-- Lao translation, and the Lao font in PDF exports.
-- PWA install.
-- Staff invites.
-- Import with column mapping.
+- Staff invites; import with column mapping.
 - Landing page, admin page and Sentry.
 - Barcode labels, stock-count mode and daily summary.
-- Deploy to Cloudflare Pages with a permanent address.
+- The benchmark and proof pages.
 - Test the camera on real Android and iPhone devices.
-- First git commit (the repo is initialised but nothing has been committed).
 
 ---
 
 ## 10. Next steps
 
 1. **Phone camera test:** open the online demo on an Android and an iPhone and scan real products.
-2. **Shared team testing:** create the Supabase project (section 3) so the team works on the same stock.
-3. **Permanent link:**
-   - Run `npx wrangler login` yourself.
-   - Then deploy `dist/` to Cloudflare Pages.
-   - Optionally add your own domain (e.g. `wms.yourdomain.com`).
-4. **Start customer interviews** (week 1 of the sales plan) while the build continues.
-5. **Commit the code to git.**
+2. **Build the till** (POS plan, block 3 onwards): the sales schema with offline-safe idempotency keys comes first, because retrofitting it later means a data migration.
+3. **Shared team testing:** create the Supabase project (section 3) so the team works on the same stock.
+4. **Start customer interviews** (week 1 of the sales plan) while the build continues, and confirm the 10% VAT rules with the Department of Taxation before claiming tax compliance.

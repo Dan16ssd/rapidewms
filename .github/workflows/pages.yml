@@ -30,7 +30,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run check-i18n
+      - run: npm run test:unit
       - run: npm run test:db
+      - run: npm audit --omit=dev
       - run: npx vite build --base=/${{ github.event.repository.name }}/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

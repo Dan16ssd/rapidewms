@@ -1,19 +1,22 @@
+import { t, locale } from "../i18n/index.js";
+
 // HTML-escape any value before putting it into markup or an attribute.
 export const E = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
 
 export const $ = (s) => document.querySelector(s);
 
+// Kip has no practical subunit, so whole amounts show no decimals.
 export const fmt = (n) =>
   "₭" +
-  (+n || 0).toLocaleString("en", {
-    minimumFractionDigits: 2,
+  (+n || 0).toLocaleString(locale(), {
+    minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   });
 
-export const dt = (t) => (t ? new Date(t).toLocaleString() : "");
+export const dt = (t) => (t ? new Date(t).toLocaleString(locale()) : "");
 
-export const num = (n) => (+n || 0).toLocaleString("en");
+export const num = (n) => (+n || 0).toLocaleString(locale());
 
 let toastTimer;
 export function toast(msg, bad) {
@@ -25,7 +28,7 @@ export function toast(msg, bad) {
 }
 
 // Promise-based modal form. fields: [{k, label, type, value}]
-export function form(title, fields, okLabel = "Save") {
+export function form(title, fields, okLabel = t("btn.save")) {
   const dlg = $("#dlg");
   dlg.innerHTML = `<form method="dialog"><h3>${E(title)}</h3><div class="mt">${fields
     .map(
@@ -34,7 +37,7 @@ export function form(title, fields, okLabel = "Save") {
           f.type == "number" ? ' step="any" min="0"' : ""
         }${f.required ? " required" : ""}></label>`,
     )
-    .join("")}</div><div class="row"><button class="b" value="ok">${E(okLabel)}</button><button class="g" value="cancel" formnovalidate>Cancel</button></div></form>`;
+    .join("")}</div><div class="row"><button class="b" value="ok">${E(okLabel)}</button><button class="g" value="cancel" formnovalidate>${E(t("btn.cancel"))}</button></div></form>`;
   dlg.showModal();
   dlg.querySelector("input")?.focus();
   return new Promise((res) =>

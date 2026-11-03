@@ -3,6 +3,7 @@
 // no negative stock, orders complete once, auto-reorder, read-only after the
 // trial) so the app behaves the same before Supabase is set up.
 import { state, emit, canWrite } from "./state.js";
+import { err } from "../i18n/index.js";
 
 const KEY = "rapidewms.local";
 const uid = () => crypto.randomUUID();
@@ -18,11 +19,12 @@ function load() {
 }
 const persist = () => (localStorage[KEY] = JSON.stringify(db));
 
-const fail = (m) => {
-  throw new Error(m);
+// Errors carry a translation key so the UI can show them in any language.
+const fail = (code, params) => {
+  throw err(code, params);
 };
-const writable = () => canWrite() || fail("Your plan has expired. Data is read-only.");
-const ownerOnly = () => state.role == "owner" || fail("You don't have permission to do that");
+const writable = () => canWrite() || fail("err.readonly");
+const ownerOnly = () => state.role == "owner" || fail("err.noPerm");
 const shopId = () => state.shop.id;
 const mine = (list) => list.filter((x) => x.shop_id == shopId());
 
@@ -36,7 +38,7 @@ export async function myShops() {
 }
 
 export async function createShop(name) {
-  name = String(name || "").trim() || fail("Shop name is required");
+  name = String(name || "").trim() || fail("err.needShopName");
   const s = {
     id: uid(),
     name,
@@ -79,10 +81,10 @@ const commit = async () => {
 
 function adjustRaw(itemId, delta, note) {
   writable();
-  const it = db.items.find((i) => i.id == itemId && i.shop_id == shopId()) || fail("Product not found");
-  if (!delta) fail("Quantity must not be zero");
+  const it = db.items.find((i) => i.id == itemId && i.shop_id == shopId()) || fail("err.itemNotFound");
+  if (!delta) fail("err.zeroQty");
   const q = +it.qty + delta;
-  if (q < 0) fail(`Not enough stock: ${it.sku} has ${+it.qty}`);
+  if (q < 0) fail("err.stock", { sku: it.sku, qty: +it.qty });
   it.qty = q;
   it.updated_at = nowIso();
   db.movements.push({
@@ -138,10 +140,13 @@ export async function saveItem(id, f) {
     barcode: f.barcode.trim() || f.sku.trim(),
     min_qty: Math.max(0, +f.min_qty || 0),
     cost: Math.max(0, +f.cost || 0),
+    price: Math.max(0, +f.price || 0),
+    price_wholesale: Math.max(0, +f.price_wholesale || 0),
+    wholesale_min_qty: Math.max(0, +f.wholesale_min_qty || 0),
     updated_at: nowIso(),
   };
-  if (!row.sku || !row.name) fail("SKU code and product name are required");
-  if (skuTaken(row.sku, id)) fail("This SKU already exists");
+  if (!row.sku || !row.name) fail("err.needSkuName");
+  if (skuTaken(row.sku, id)) fail("err.dupSku");
   let it = id && db.items.find((i) => i.id == id && i.shop_id == shopId());
   if (it) Object.assign(it, row);
   else db.items.push((it = { id: uid(), shop_id: shopId(), qty: 0, created_at: nowIso(), ...row }));
@@ -173,6 +178,9 @@ export async function importItems(list) {
       qty: 0,
       min_qty: Math.max(0, +x.min_qty || 0),
       cost: Math.max(0, +x.cost || 0),
+      price: Math.max(0, +x.price || 0),
+      price_wholesale: Math.max(0, +x.price_wholesale || 0),
+      wholesale_min_qty: Math.max(0, +x.wholesale_min_qty || 0),
       created_at: nowIso(),
       updated_at: nowIso(),
     };
@@ -188,8 +196,8 @@ export async function importItems(list) {
 
 export async function addOrder(o) {
   writable();
-  if (!mine(db.items).some((i) => i.id == o.item_id)) fail("Product not found");
-  if (!(o.qty > 0)) fail("Quantity must be more than zero");
+  if (!mine(db.items).some((i) => i.id == o.item_id)) fail("err.itemNotFound");
+  if (!(o.qty > 0)) fail("err.qtyPositive");
   db.orders.push({
     id: uid(),
     shop_id: shopId(),
@@ -205,8 +213,8 @@ export async function addOrder(o) {
 }
 
 export async function completeOrder(id) {
-  const o = db.orders.find((x) => x.id == id && x.shop_id == shopId()) || fail("Order not found");
-  if (o.status != "pending") fail("This order is already completed");
+  const o = db.orders.find((x) => x.id == id && x.shop_id == shopId()) || fail("err.orderNotFound");
+  if (o.status != "pending") fail("err.orderDone");
   adjustRaw(o.item_id, o.type == "in" ? o.qty : -o.qty, "order");
   o.status = "done";
   o.completed_at = nowIso();

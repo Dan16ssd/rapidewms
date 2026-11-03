@@ -3,6 +3,8 @@
 // of the current shop's data for rendering.
 import { createClient } from "@supabase/supabase-js";
 import { state, emit, canWrite } from "./state.js";
+import { err } from "../i18n/index.js";
+import { pageAll } from "./page.js";
 
 const url = import.meta.env.VITE_SUPABASE_URL,
   key = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -11,74 +13,58 @@ export const sb = configured ? createClient(url, key) : null;
 
 export const signOut = () => sb.auth.signOut();
 
-// Turn Postgres / network errors into something a shop owner can act on.
+// Turn Postgres / network errors into a translatable error a shop owner can act on.
+// The SQL keeps raising English (001_schema.sql), so the sku and qty are parsed back out.
 function friendly(e) {
-  const m = (e && (e.message || e.error_description)) || String(e);
-  if (/not enough stock/i.test(m)) return m.replace(/^.*?(not enough stock)/i, "Not enough stock");
-  if (/items_shop_sku_uidx|duplicate key/i.test(m)) return "This SKU already exists";
+  const m = (e && (e.message || e.error_description)) || String(e),
+    stock = /not enough stock:\s*(.+?) has (\S+)/i.exec(m);
+  if (stock) return err("err.stock", { sku: stock[1], qty: stock[2] });
+  if (/not enough stock/i.test(m)) return err("err.stock", { sku: "", qty: "" });
+  if (/items_shop_sku_uidx|duplicate key/i.test(m)) return err("err.dupSku");
   if (/read-only|row-level security|permission denied/i.test(m))
-    return canWrite() ? "You don't have permission to do that" : "Your plan has expired. Data is read-only.";
-  if (/already completed/i.test(m)) return "This order is already completed";
-  if (/failed to fetch|network/i.test(m)) return "No internet connection. Try again when you're back online.";
-  return m;
+    return err(canWrite() ? "err.noPerm" : "err.readonly");
+  if (/already completed/i.test(m)) return err("err.orderDone");
+  if (/failed to fetch|network/i.test(m)) return err("err.offline");
+  return new Error(m);
 }
 const must = async (p) => {
   const { data, error } = await p;
-  if (error) throw new Error(friendly(error));
+  if (error) throw friendly(error);
   return data;
 };
 
-// ---------- session & shop ----------
+// Read a whole table, not just the first page the server feels like giving us.
+const all = (make, cap) => pageAll(make, cap, friendly);
 
-export async function myShops() {
-  return must(
-    sb.from("members").select("role, shops(id, name, plan, plan_until)").eq("user_id", state.user.id),
-  );
-}
-
-export async function createShop(name) {
-  return must(sb.rpc("create_shop", { p_name: name }));
-}
-
-let channel = null,
-  reloadTimer = null;
-
-export async function openShop(m) {
-  state.shop = m.shops;
-  state.role = m.role;
-  localStorage.lastShop = state.shop.id;
-  await reload();
-  // Realtime: any change by another device in this shop triggers a refresh.
-  if (channel) sb.removeChannel(channel);
-  const filter = `shop_id=eq.${state.shop.id}`;
-  channel = sb.channel("shop-" + state.shop.id);
-  for (const table of ["items", "orders", "movements", "settings"])
-    channel.on("postgres_changes", { event: "*", schema: "public", table, filter }, () => {
-      clearTimeout(reloadTimer);
-      reloadTimer = setTimeout(() => reload().catch(() => {}), 300);
-    });
-  channel.subscribe();
-}
+// Products are never capped: a missing product is missing stock, and the
+// inventory list, search and export all read from this copy. Orders and
+// movements keep a ceiling so one long-running shop can't stall every reload;
+// when it bites, state.truncated tells the UI to say so instead of quietly
+// showing a partial history.
+const CAP = { orders: 5000, movements: 10000 };
 
 export async function reload() {
   const id = state.shop.id,
-    since = new Date(Date.now() - 30 * 864e5).toISOString();
+    since = new Date(Date.now() - 30 * 864e5).toISOString(),
+    sel = (table) => sb.from(table).select("*", { count: "exact" }).eq("shop_id", id);
   const [items, orders, movements, settings, shop] = await Promise.all([
-    must(sb.from("items").select("*").eq("shop_id", id).order("sku")),
-    must(sb.from("orders").select("*").eq("shop_id", id).order("created_at", { ascending: false }).limit(500)),
-    must(
-      sb
-        .from("movements")
-        .select("*")
-        .eq("shop_id", id)
-        .gte("created_at", since)
-        .order("created_at", { ascending: false })
-        .limit(2000),
+    all(() => sel("items").order("sku")),
+    // created_at alone is not unique, so id breaks ties and keeps paging stable.
+    all(() => sel("orders").order("created_at", { ascending: false }).order("id"), CAP.orders),
+    all(
+      () => sel("movements").gte("created_at", since).order("created_at", { ascending: false }).order("id"),
+      CAP.movements,
     ),
     must(sb.from("settings").select("*").eq("shop_id", id).maybeSingle()),
     must(sb.from("shops").select("id, name, plan, plan_until").eq("id", id).single()),
   ]);
-  Object.assign(state, { items, orders, movements, shop });
+  Object.assign(state, {
+    items: items.rows,
+    orders: orders.rows,
+    movements: movements.rows,
+    shop,
+    truncated: [items, orders, movements].some((r) => r.rows.length < r.total),
+  });
   if (settings) state.settings = settings;
   emit();
 }
@@ -99,6 +85,9 @@ export async function saveItem(id, f) {
     barcode: f.barcode.trim() || f.sku.trim(),
     min_qty: +f.min_qty || 0,
     cost: +f.cost || 0,
+    price: +f.price || 0,
+    price_wholesale: +f.price_wholesale || 0,
+    wholesale_min_qty: +f.wholesale_min_qty || 0,
   };
   let itemId = id;
   if (id) await must(sb.from("items").update({ ...row, updated_at: new Date().toISOString() }).eq("id", id));

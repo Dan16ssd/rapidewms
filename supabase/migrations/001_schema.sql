@@ -40,6 +40,11 @@ create table public.items (
   qty        numeric not null default 0 check (qty >= 0),
   min_qty    numeric not null default 0 check (min_qty >= 0),
   cost       numeric not null default 0 check (cost >= 0),
+  -- Selling side. price_wholesale 0 means "no wholesale price for this item";
+  -- the till uses it once a line reaches wholesale_min_qty.
+  price             numeric not null default 0 check (price >= 0),
+  price_wholesale   numeric not null default 0 check (price_wholesale >= 0),
+  wholesale_min_qty numeric not null default 0 check (wholesale_min_qty >= 0),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -138,8 +143,10 @@ grant select on public.shops, public.members, public.settings, public.items,
                 public.orders, public.movements to authenticated;
 grant update (name) on public.shops to authenticated;
 grant update (low_alert, auto_reorder, updated_at) on public.settings to authenticated;
-grant insert (shop_id, sku, name, category, barcode, min_qty, cost) on public.items to authenticated;
-grant update (sku, name, category, barcode, min_qty, cost, updated_at) on public.items to authenticated;
+grant insert (shop_id, sku, name, category, barcode, min_qty, cost,
+              price, price_wholesale, wholesale_min_qty) on public.items to authenticated;
+grant update (sku, name, category, barcode, min_qty, cost,
+              price, price_wholesale, wholesale_min_qty, updated_at) on public.items to authenticated;
 grant delete on public.items to authenticated;
 grant insert (shop_id, item_id, type, qty, party) on public.orders to authenticated;
 grant delete on public.orders to authenticated;
