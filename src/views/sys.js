@@ -1,5 +1,5 @@
 import { E } from "../lib/util.js";
-import { t, tn, lang, LANGS, locale } from "../i18n/index.js";
+import { t, tn, lang, LANGS, fDate } from "../i18n/index.js";
 import { isOwner, configured } from "../data/store.js";
 
 export default function sys(s) {
@@ -11,7 +11,7 @@ export default function sys(s) {
     { email: E(s.user.email), role: t(s.role == "owner" ? "role.owner" : "role.staff") },
   )}</p><p class="plan mt ${days <= 0 ? "expired" : ""}">${
     days > 0
-      ? tn("sys.planLeft", days, { plan, date: until.toLocaleDateString(locale()) })
+      ? tn("sys.planLeft", days, { plan, date: fDate(until) })
       : t("sys.planExpired")
   }</p>${
     configured

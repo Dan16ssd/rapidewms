@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="RAPIDEWMS">
+  <rect width="512" height="512" rx="112" fill="#120a2a"/>
+  <text x="136" y="392" font-size="368" font-family="Georgia, 'Times New Roman', 'Noto Serif', serif" font-style="italic" fill="#c4b5fd">R</text>
+  <path d="M104 64l17 46 46 17-46 17-17 46-17-46-46-17 46-17z" fill="#a78bfa"/>
+</svg>

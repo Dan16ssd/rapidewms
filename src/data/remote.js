@@ -24,6 +24,14 @@ function friendly(e) {
   if (/read-only|row-level security|permission denied/i.test(m))
     return err(canWrite() ? "err.noPerm" : "err.readonly");
   if (/already completed/i.test(m)) return err("err.orderDone");
+  const price = /no sell price:\s*(.+)$/i.exec(m);
+  if (price) return err("err.noPrice", { sku: price[1] });
+  if (/cash paid is less/i.test(m)) return err("err.cashShort");
+  if (/discount must be/i.test(m)) return err("err.discount");
+  if (/has no products/i.test(m)) return err("err.emptySale");
+  if (/already voided/i.test(m)) return err("err.saleVoided");
+  if (/only the owner/i.test(m)) return err("err.noPerm");
+  if (/lot not found/i.test(m)) return err("err.lotNotFound");
   if (/failed to fetch|network/i.test(m)) return err("err.offline");
   return new Error(m);
 }
@@ -41,13 +49,13 @@ const all = (make, cap) => pageAll(make, cap, friendly);
 // movements keep a ceiling so one long-running shop can't stall every reload;
 // when it bites, state.truncated tells the UI to say so instead of quietly
 // showing a partial history.
-const CAP = { orders: 5000, movements: 10000 };
+const CAP = { orders: 5000, movements: 10000, sales: 5000, saleLines: 20000 };
 
 export async function reload() {
   const id = state.shop.id,
     since = new Date(Date.now() - 30 * 864e5).toISOString(),
     sel = (table) => sb.from(table).select("*", { count: "exact" }).eq("shop_id", id);
-  const [items, orders, movements, settings, shop] = await Promise.all([
+  const [items, orders, movements, settings, shop, lots, sales, saleLines] = await Promise.all([
     all(() => sel("items").order("sku")),
     // created_at alone is not unique, so id breaks ties and keeps paging stable.
     all(() => sel("orders").order("created_at", { ascending: false }).order("id"), CAP.orders),
@@ -57,13 +65,20 @@ export async function reload() {
     ),
     must(sb.from("settings").select("*").eq("shop_id", id).maybeSingle()),
     must(sb.from("shops").select("id, name, plan, plan_until").eq("id", id).single()),
+    // Lots are never capped: like products, a missing one is a missing expiry warning.
+    all(() => sel("lots").order("expiry").order("id")),
+    all(() => sel("sales").gte("created_at", since).order("created_at", { ascending: false }).order("id"), CAP.sales),
+    all(() => sel("sale_lines").gte("created_at", since).order("created_at", { ascending: false }).order("id"), CAP.saleLines),
   ]);
   Object.assign(state, {
     items: items.rows,
     orders: orders.rows,
     movements: movements.rows,
     shop,
-    truncated: [items, orders, movements].some((r) => r.rows.length < r.total),
+    lots: lots.rows,
+    sales: sales.rows,
+    saleLines: saleLines.rows,
+    truncated: [items, orders, movements, sales, saleLines].some((r) => r.rows.length < r.total),
   });
   if (settings) state.settings = settings;
   emit();
@@ -82,6 +97,7 @@ export async function saveItem(id, f) {
     sku: f.sku.trim(),
     name: f.name.trim(),
     category: f.category.trim() || "General",
+    kind: f.kind == "consumable" ? "consumable" : "durable",
     barcode: f.barcode.trim() || f.sku.trim(),
     min_qty: +f.min_qty || 0,
     cost: +f.cost || 0,
@@ -94,14 +110,40 @@ export async function saveItem(id, f) {
   else itemId = (await must(sb.from("items").insert({ ...row, shop_id: state.shop.id }).select("id").single())).id;
   const qty = +f.qty || 0,
     cur = state.items.find((i) => i.id == id)?.qty ?? 0;
-  if (qty != cur) await must(sb.rpc("set_stock", { p_item: itemId, p_qty: qty, p_note: id ? "edit" : "initial" }));
+  const note = id ? "edit" : "initial";
+  // Stock going up may carry an expiry date, which set_stock has no room for.
+  if (qty > cur)
+    await must(sb.rpc("adjust_stock", { p_item: itemId, p_delta: qty - cur, p_note: note, p_expiry: f.expiry || null }));
+  else if (qty < cur) await must(sb.rpc("set_stock", { p_item: itemId, p_qty: qty, p_note: note }));
   await reload();
 }
 
 export const deleteItem = (id) => write(sb.from("items").delete().eq("id", id));
 
-export const adjust = (id, delta, note = "manual") =>
-  write(sb.rpc("adjust_stock", { p_item: id, p_delta: delta, p_note: note }));
+export const adjust = (id, delta, note = "manual", expiry = null) =>
+  write(sb.rpc("adjust_stock", { p_item: id, p_delta: delta, p_note: note, p_expiry: expiry }));
+
+export const writeOffLot = (id, note = "expired") => write(sb.rpc("write_off_lot", { p_lot: id, p_note: note }));
+
+// ---------- the till ----------
+
+// One call, one transaction: the database prices each line and moves the stock.
+export async function createSale({ client_id, lines, discount = 0, method = "cash", paid = 0 }) {
+  const id = await must(
+    sb.rpc("create_sale", {
+      p_shop: state.shop.id,
+      p_client_id: client_id,
+      p_lines: lines.map((l) => ({ item_id: l.item_id, qty: l.qty })),
+      p_discount: discount,
+      p_method: method,
+      p_paid: paid,
+    }),
+  );
+  await reload();
+  return state.sales.find((x) => x.id == id) || (await must(sb.from("sales").select("*").eq("id", id).single()));
+}
+
+export const voidSale = (id) => write(sb.rpc("void_sale", { p_sale: id }));
 
 // Bulk import: new SKUs only, existing ones are skipped. Returns count added.
 export async function importItems(list) {

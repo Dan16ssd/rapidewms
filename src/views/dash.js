@@ -1,5 +1,6 @@
 import { E, fmt, num } from "../lib/util.js";
-import { t } from "../i18n/index.js";
+import { t, tn } from "../i18n/index.js";
+import { status } from "../lib/expiry.js";
 
 const P = ["#8b5cf6", "#22d3ee", "#f472b6", "#fbbf24", "#34d399", "#fb923c"];
 
@@ -9,6 +10,9 @@ export default function dash(s) {
     lo = I.filter((i) => +i.qty < +i.min_qty).length,
     val = I.reduce((a, i) => a + i.qty * i.cost, 0),
     retail = I.reduce((a, i) => a + i.qty * i.price, 0),
+    day = new Date().toDateString(),
+    sold = s.sales.filter((x) => x.status != "void" && new Date(x.created_at).toDateString() == day),
+    dated = s.lots.filter((l) => status(l.expiry) != "ok"),
     c = {};
   I.forEach((i) => (c[i.category] = (c[i.category] || 0) + +i.qty));
   const ks = Object.keys(c).filter((k) => c[k] > 0),
@@ -34,12 +38,12 @@ export default function dash(s) {
     ["dash.low", num(lo), "⚠", "warn"],
     ["dash.value", fmt(val), "₭", "in"],
     ["dash.retail", fmt(retail), "₭", "in"],
+    ["dash.sales", fmt(sold.reduce((a, x) => a + +x.total, 0)), "🧾", "in", tn("dash.sales.sub", sold.length)],
+    ["dash.expiring", num(dated.reduce((a, l) => a + +l.qty, 0)), "⏳", dated.length ? "warn" : "", tn("dash.expiring.sub", dated.length)],
   ]
     .map(
-      ([k, b, i, cl]) =>
-        `<div class="card"><div class="sh">${t(k)}<i class="ic">${i}</i></div><b class="n ${cl}">${b}</b><small>${t(
-          k + ".sub",
-        )}</small></div>`,
+      ([k, b, i, cl, v]) =>
+        `<div class="card"><div class="sh">${t(k)}<i class="ic">${i}</i></div><b class="n ${cl}">${b}</b><small>${v ?? t(k + ".sub")}</small></div>`,
     )
     .join("")}</div>
 <div class="charts"><div class="card"><h3>${t("dash.byCat")}<small>${t(

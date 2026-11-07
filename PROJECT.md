@@ -60,7 +60,7 @@ The app picks its backend automatically in `src/data/store.js`:
 ### Switching to Supabase
 
 1. Create a free project at https://supabase.com (Singapore region is closest to Laos).
-2. Open **SQL Editor**, paste all of `supabase/migrations/001_schema.sql` and run it.
+2. Open **SQL Editor**, paste all of `supabase/migrations/001_schema.sql` and run it, then `002_pos.sql`. An existing project only needs `002_pos.sql`; until it is run, the till, expiry and product-kind features fail with "column does not exist".
 3. In **Project Settings → API**, copy the Project URL and the `anon` key.
 4. Copy `.env.example` to `.env` and paste both values in.
 5. Restart `npm run dev`.
@@ -71,10 +71,12 @@ The app picks its backend automatically in `src/data/store.js`:
 
 | Screen | What it does |
 |---|---|
-| **Dashboard** | Stock value, units, recent in/out movement chart, low-stock banner |
-| **Inventory** | Add, edit and delete products; search; +/− stock buttons. Product fields: SKU, name, category, barcode, quantity, minimum, unit cost, **sell price, wholesale price and the quantity wholesale starts at** (all in ₭) |
+| **Dashboard** | Stock value, units, today's sales, products expiring within 30 days, recent in/out movement chart, low-stock banner |
+| **Till (₭)** | Scan (camera or USB scanner), type a code, or search by name to add products. Change quantities; wholesale price applies automatically from its minimum quantity. Discount, cash or bank transfer, quick cash buttons and change due. Charge is refused if stock is short. Receipt on screen and printable (58 mm thermal or A4 browser print), sequential receipt numbers, today's sales list, owner-only void that restores stock |
+| **Expiry (⏳)** | Every dated batch, soonest first: expired, within 30 days, later. Write off an expired batch in one tap. Lists consumables that have stock with no date yet. The nav shows a badge when something has expired |
+| **Inventory** | Add, edit and delete products; search; filter by consumable / non-consumable / expiring / expired; +/− stock buttons. Product fields: SKU, name, category, **kind (consumable or non-consumable)**, barcode, quantity, **expiry date** (consumables), minimum, unit cost, **sell price, wholesale price and the quantity wholesale starts at** (all in ₭). **🤖 Identify** names a product from a photo |
 | **Orders** | Inbound and outbound orders; completing an order updates stock, and an order can only be completed once |
-| **Scanner** | Camera or USB/Bluetooth scanner. Modes: receive, ship, look up. Matches SKU (any case) or barcode. Unknown code → "Add as new product" |
+| **Scanner** | Camera or USB/Bluetooth scanner. Modes: receive, ship, look up. Matches SKU (any case) or barcode, including GS1 codes (the expiry date in a GS1 DataMatrix or GS1-128 code is taken automatically). Receiving a consumable asks for its expiry date: type it (`1227`, `311227`, `31/12/2027`) or **📷 read it from a photo** of the package. Unknown code → "Add as new product" |
 | **Reports & export** | Inventory, orders and movements as PDF, Excel or CSV; currency converter (live rates) |
 | **Automation** | Low-stock alerts; auto-reorder creates an inbound order for (minimum × 2 − stock) when stock drops below minimum and no inbound order is pending |
 | **Shop & backup** | Plan and trial status, language, full ZIP backup, CSV product import, erase all data (owner only, must type ERASE) |
@@ -92,14 +94,21 @@ The app picks its backend automatically in `src/data/store.js`:
 
 ## 5. Barcode scanning: what's tested
 
-| Check | Result |
+The camera uses the browser's own barcode reader where there is one (Android Chrome), otherwise zxing-cpp compiled to WebAssembly, bundled so it works offline. A green box is drawn over each code as it is read, with a beep and a vibration. zxing reads straight, sideways and upside-down codes; for diagonal ones each empty frame is tried again turned 45°.
+
+| Check (headless Chrome, zxing engine, 2026-11-07) | Result |
 |---|---|
 | USB/Bluetooth scanner (types the code + Enter) | Works: receive, ship, look up, not-enough-stock refusal, unknown-code prompt all verified |
-| Camera decoder on a real EAN-13 barcode image (5449000000996) | Read back exactly |
-| Camera allowed on `localhost` | Yes |
+| EAN-13 on a cardboard background, every 15° from 0° to 345°, clean and with sensor noise | **48/48 read**; the box lands within 1 px of the barcode |
+| Blur 1.5 px at 200°; 2 px bars at 20° | Read |
+| Live camera (Chrome fake webcam) on the till and scanner screens | Starts at 1280×720 with the overlay, stops on the button, released when leaving the screen |
 | Live camera on a real phone | **Not tested yet.** Open the online demo on a phone and try it |
 
-Formats: EAN-13, UPC, Code 128, QR and others supported by html5-qrcode. Laptop webcams often can't focus on thin 1D barcodes; phones and QR codes work better.
+Formats: EAN-13/8, UPC-A/E, Code 128, Code 39, ITF, QR, DataMatrix. Laptop webcams often can't focus on thin 1D barcodes; phones work better.
+
+**Reading an expiry date from a photo** uses Tesseract (≈6 MB once, then offline). Rendered package labels tested: `EXP 31/12/2027` with an `MFG` date beside it (the MFG date is ignored), `Best before: 15 MAR 2027`, Thai `หมดอายุ 05/09/70` (Buddhist year → 2027), a sideways photo, and dot-matrix style `EXP 12.08.27`: **5/5 correct, ~1.3 s each**. Real crinkled or curved packaging will do worse, so the date is shown for the person to confirm, never saved alone.
+
+**Identifying a product from a photo** uses SmolVLM-256M on the device: **215 MB download once** (asked first; Wi-Fi recommended), then offline. Measured on a PC with WebGPU: ~1 s per photo after loading. Phones without WebGPU run on the CPU and will be several times slower; not yet measured. The model names products well but sorts them badly (asked "can people eat this?" it said yes to a hammer, a shirt and a charger), so it only gives the name, and the type comes from keywords in that name (English, Lao, Thai). When no keyword matches, the person picks consumable or not. Six test products (water, hammer, chips, paracetamol, T-shirt, USB charger): **6/6 named and typed correctly**. It reads Lao and Thai print poorly.
 
 ---
 
@@ -120,9 +129,15 @@ src/data/local.js          Local demo backend (localStorage), same rules as the 
 src/lib/util.js            Escaping, formatting, toast, form dialog, download
 src/lib/csv.js             CSV parse/write, product import
 src/lib/export.js          PDF / Excel / CSV / ZIP export (libraries load on demand)
-src/views/*.js             One file per screen: dash, inv, ord, scan, rep, auto, sys
+src/views/*.js             One file per screen: dash, pos (till), exp (expiry), inv, ord, scan, rep, auto, sys
+src/lib/camera.js          Camera barcode reader + green AR box (native or zxing WebAssembly)
+src/lib/expiry.js          Expiry-date reading: typed shortcuts, package text, GS1 codes
+src/lib/ocr.js             Read an expiry date from a photo (Tesseract, loaded on demand)
+src/lib/identify.js        Name a product from a photo (SmolVLM, loaded on demand)
+src/lib/receipt.js         Receipt HTML and printing
 src/i18n/{en,lo,index}.js  All interface text + the t() lookup
 supabase/migrations/001_schema.sql   Tables, row-level security, stock functions
+supabase/migrations/002_pos.sql      Product kind, expiry lots, sales, receipts, void, write-off
 scripts/test-db.mjs        Database tests (PGlite)
 scripts/check-i18n.mjs     Translation completeness + hardcoded-text check
 ```
@@ -159,6 +174,10 @@ scripts/check-i18n.mjs     Translation completeness + hardcoded-text check
 - `erase_shop_data`: owner only.
 
 **Tests:** `npm run test:db` runs 20 checks covering shop isolation, stock rules, orders, automation and billing. All pass.
+
+**Backups:** the free plan includes none ("Free Plan does not include project backups"), so `npm run backup` takes its own: a gzipped NDJSON dump of every `public` table plus `auth.users` and `auth.identities`, read in one repeatable-read snapshot so stock and history can't disagree. Tables are discovered from the catalogue and written parents-first, so the POS tables will be included without editing the script. It needs no `pg_dump`, Docker or Supabase CLI, and connects through the session pooler because direct connections are IPv6-only on the free plan.
+
+`npm run backup:verify` restores the newest file into a throwaway Postgres built from `supabase/migrations`, with every constraint enforced, then re-derives each product's stock from its movements. It rejects a truncated file, a file whose rows break a foreign key, and one whose stock no longer matches its history — all three are covered by tests. Backups are written outside the repository, and `*.ndjson.gz` is gitignored, because the repository is public.
 
 **Manual billing** (after the customer pays by BCEL One / LAPNet QR), run in the SQL Editor:
 ```sql
@@ -209,16 +228,20 @@ The full written plan is kept outside the repo; this table is the summary.
 - Mobile table row labels fixed (they were lost when the single file was split into modules).
 - **Password reset by email** — request a link, set a new password, and the app will not let a recovery session walk past that screen into the shop.
 - **Large shops load completely.** Reads are paged, so a shop is no longer cut off at the server's 1000-row response cap; when orders or movement history does hit the app's own ceiling, the screen says so instead of quietly showing part of it.
-- First front-end tests (`npm run test:unit`, 12 checks on the paging logic), and CI now also runs them, `npm audit` and the build.
+- First front-end tests (`npm run test:unit`, 20 checks on paging and backup retention), and CI now also runs them, `npm audit` and the build.
+- **A real Supabase project** (Singapore), with the schema applied and verified.
+- **Bundled Lao font.** Noto Sans Lao (Lao subset, ~9 KB a weight) ships with the app instead of coming from a CDN, so Lao renders the same on every device and still renders offline. Lao also gets its own leading and a larger floor for small text, because its vowel signs sit above the letter and its tone marks below.
+- **Installs as an app on Windows and Android.** One PWA build, no separate desktop project and no `.exe` to sign. The service worker precaches the shell, the fonts and the scanner (674 KB); the export libraries (~1.4 MB) are cached on first use instead, so installing over a phone connection stays small. Supabase responses are never cached, on purpose.
+- **Backups that are checked, not assumed.** `npm run backup` dumps the live database to a file outside this repo; `npm run backup:verify` restores it into a throwaway database and fails if it is truncated, inconsistent or missing its users. A daily Windows task takes them, which also stops the free project pausing after a week idle.
 
 **Not done yet** (the POS plan covers these; see section 9's blocks):
 - The till itself: sell screen, payments, receipts, customers and credit, shifts.
-- Offline write queue and PWA install.
-- Automatic backups, and applying migrations with the Supabase CLI against a separate staging project rather than pasting SQL into the dashboard.
+- **The offline write queue.** The app now opens and runs offline, but a change made with no connection is still refused rather than stored and replayed. This needs the `client_id` idempotency keys to be in the schema from the first sales migration, or a queued write can apply twice on reconnect.
+- Applying migrations with the Supabase CLI against a separate staging project, rather than pasting SQL into the dashboard. This has to exist before the POS tables touch a database with real shop data.
+- An **off-machine** copy of the backups. Today they only live on one laptop, so a stolen or dead machine loses them; the folder needs to be inside OneDrive, a USB stick or similar.
 - Error tracking (Sentry), so a bug in a shop reaches us without a phone call.
 - Showing **who** made each stock change: `movements.created_by` is recorded but never displayed.
 - Lao font in PDF exports, and receipt printing.
-- Connect a real Supabase project.
 - Staff invites; import with column mapping.
 - Landing page, admin page and Sentry.
 - Barcode labels, stock-count mode and daily summary.
@@ -229,7 +252,8 @@ The full written plan is kept outside the repo; this table is the summary.
 
 ## 10. Next steps
 
-1. **Phone camera test:** open the online demo on an Android and an iPhone and scan real products.
-2. **Build the till** (POS plan, block 3 onwards): the sales schema with offline-safe idempotency keys comes first, because retrofitting it later means a data migration.
-3. **Shared team testing:** create the Supabase project (section 3) so the team works on the same stock.
-4. **Start customer interviews** (week 1 of the sales plan) while the build continues, and confirm the 10% VAT rules with the Department of Taxation before claiming tax compliance.
+1. **Run `002_pos.sql` on the Supabase project**, then test the till with two devices at once.
+2. **Phone test in a real shop:** scan real products at odd angles, read real expiry labels, and time the product identify on a cheap Android. The numbers in section 5 are from a PC.
+3. **Still to build for the till:** customers and credit sales, shifts with cash count, refunds of part of a sale, Bluetooth thermal printing, and the offline write queue (sales already carry the `client_id` it needs).
+4. **Shared team testing:** create the Supabase project (section 3) so the team works on the same stock.
+5. **Start customer interviews** (week 1 of the sales plan) while the build continues, and confirm the 10% VAT rules with the Department of Taxation before claiming tax compliance.

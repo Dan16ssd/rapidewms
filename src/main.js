@@ -1,6 +1,12 @@
 import "./styles.css";
-import { $, E, toast, form } from "./lib/util.js";
-import { t, tn, errText, setLang, other, applyStatic, locale } from "./i18n/index.js";
+// Lao glyphs, bundled with the app rather than fetched from a CDN, so Lao still
+// renders with no internet. Only the Lao subset is pulled in: ~9 KB a weight.
+import "@fontsource/noto-sans-lao/lao-400.css";
+import "@fontsource/noto-sans-lao/lao-500.css";
+import "@fontsource/noto-sans-lao/lao-600.css";
+import "@fontsource/noto-sans-lao/lao-700.css";
+import { $, E, toast, form, pickPhoto, checkExpiry, dateText } from "./lib/util.js";
+import { t, tn, errText, setLang, other, applyStatic, fDateTime } from "./i18n/index.js";
 import { csvToItems } from "./lib/csv.js";
 import { exportSet, exportZip } from "./lib/export.js";
 import * as store from "./data/store.js";
@@ -14,12 +20,19 @@ import scan from "./views/scan.js";
 import rep, { conv, refreshRates } from "./views/rep.js";
 import auto from "./views/auto.js";
 import sys from "./views/sys.js";
+import pos, * as till from "./views/pos.js";
+import exp from "./views/exp.js";
+import { status, SOON_DAYS } from "./lib/expiry.js";
+import { MODEL_MB, isCached, identify } from "./lib/identify.js";
+import { detectImage } from "./lib/camera.js";
 
-const VIEWS = { dash, inv, ord, scan, rep, auto, sys };
+const VIEWS = { dash, pos, inv, exp, ord, scan, rep, auto, sys };
 // [view key, icon]; the label and subtitle come from nav.<key> / nav.<key>.sub
 const N = [
   ["dash", "◔"],
+  ["pos", "₭"],
   ["inv", "▦"],
+  ["exp", "⏳"],
   ["ord", "⛟"],
   ["scan", "▥"],
   ["rep", "▤"],
@@ -30,10 +43,13 @@ let view = VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : "dash";
 
 // ---------- render ----------
 
-function render() {
+// force: rebuild the till too (a language switch); otherwise it only refreshes.
+function render(force) {
   if (!state.shop) return;
   $("#auth").hidden = true;
   $("#app").hidden = false;
+  const expired = state.lots.filter((l) => status(l.expiry) == "expired").length,
+    alerts = expired + state.lots.filter((l) => status(l.expiry) == "soon").length;
   const lo = state.items.filter((i) => +i.qty < +i.min_qty).length,
     po = state.orders.filter((o) => o.status == "pending").length,
     days = Math.ceil((new Date(state.shop.plan_until) - Date.now()) / 864e5);
@@ -42,7 +58,13 @@ function render() {
   $("#nav").innerHTML = `<h6>${t("nav.title")}</h6><div>${N.map(
     ([k, i]) =>
       `<a class="${k == view ? "on" : ""}" href="#${k}"><i>${i}</i>${t("nav." + k)}${
-        k == "inv" ? `<em>${state.items.length}</em>` : k == "ord" ? `<em>${po}</em>` : ""
+        k == "inv"
+          ? `<em>${state.items.length}</em>`
+          : k == "ord"
+            ? `<em>${po}</em>`
+            : k == "exp" && alerts
+              ? `<em class="warn">${alerts}</em>`
+              : ""
       }</a>`,
   ).join("")}</div>`;
   $("#eng").innerHTML = `<div>${t("eng.status")}<b>${t(
@@ -53,6 +75,8 @@ function render() {
       : tn("plan.left", days, { plan: t(state.shop.plan == "paid" ? "plan.paid" : "plan.trial") })
   }</p>`;
 
+  // The till draws its own changes, so a sale in progress is never wiped.
+  if (view == "pos" && $("#pos") && !force) return till.refresh();
   // Don't wipe the camera view or an input the user is typing in.
   if (view == "scan" && scanner.active()) return;
   const focused = document.activeElement;
@@ -60,7 +84,7 @@ function render() {
     if (view == "inv") $("#tb").innerHTML = invRows(state);
     return;
   }
-  if ($("#dlg").open) return;
+  if ($("#dlg").open && !force) return;
 
   $("#main").innerHTML = `<div class="card top"><div><h2>${t("nav." + view)}</h2><p>${t(
     "nav." + view + ".sub",
@@ -74,11 +98,16 @@ function render() {
       ? `<div class="card warn">${t("msg.truncated")}</div>`
       : ""
   }${
-    state.settings.low_alert && lo && view != "auto"
+    expired && !["exp", "pos"].includes(view)
+      ? `<div class="card warn">${t("msg.expired", { n: expired })} <a href="#exp">${t("msg.openExp")}</a></div>`
+      : ""
+  }${
+    state.settings.low_alert && lo && !["auto", "pos"].includes(view)
       ? `<div class="card warn">${tn("msg.low", lo)}</div>`
       : ""
   }${VIEWS[view](state)}`;
   if (view == "rep") conv();
+  if (view == "scan") syncScanView();
 }
 store.onChange(render);
 
@@ -107,6 +136,7 @@ async function itemForm(id, code) {
     barcode: code || "",
     name: "",
     category: "",
+    kind: "durable",
     qty: 0,
     min_qty: 0,
     cost: 0,
@@ -116,10 +146,34 @@ async function itemForm(id, code) {
   };
   const f = await form(t(id ? "title.editItem" : "title.addItem"), [
     { k: "sku", label: t("f.sku"), value: i.sku, required: true },
-    { k: "name", label: t("f.name"), value: i.name, required: true },
+    {
+      k: "name",
+      label: t("f.name"),
+      value: i.name,
+      required: true,
+      tools: [{ act: "identify", label: t("btn.identify") }],
+    },
     { k: "category", label: t("f.category"), value: i.category },
+    {
+      k: "kind",
+      label: t("f.kind"),
+      type: "select",
+      value: i.kind || "durable",
+      options: [
+        ["consumable", t("kind.consumableLong")],
+        ["durable", t("kind.durableLong")],
+      ],
+    },
     { k: "barcode", label: t("f.barcode"), value: i.barcode ?? "" },
     { k: "qty", label: t("f.qty"), type: "number", value: +i.qty },
+    {
+      k: "expiry",
+      label: t(id ? "f.expiryAdded" : "f.expiry"),
+      type: "expiry",
+      showIf: ["kind", "consumable"],
+      tools: [{ act: "readDate", label: t("btn.readDate") }],
+      hint: t("f.expiryHint"),
+    },
     { k: "min_qty", label: t("f.min"), type: "number", value: +i.min_qty },
     { k: "cost", label: t("f.cost"), type: "number", value: +i.cost },
     { k: "price", label: t("f.price"), type: "number", value: +i.price || 0 },
@@ -144,12 +198,24 @@ const A = {
     if (!needWrite()) return;
     const it = state.items.find((x) => x.id == el.dataset.id),
       dir = +el.dataset.dir,
+      dated = dir > 0 && it.kind == "consumable",
       f = await form(t(dir > 0 ? "title.addStock" : "title.removeStock", { sku: it.sku }), [
         { k: "q", label: t("f.howMany", { qty: +it.qty }), type: "number", value: 1, required: true },
+        ...(dated
+          ? [
+              {
+                k: "expiry",
+                label: t("f.expiry"),
+                type: "expiry",
+                tools: [{ act: "readDate", label: t("btn.readDate") }],
+                hint: t("f.expiryHint"),
+              },
+            ]
+          : []),
       ]);
     const q = f && +f.q;
     if (!q || q < 0) return;
-    await store.adjust(it.id, dir * q);
+    await store.adjust(it.id, dir * q, "manual", (dated && f.expiry) || null);
     toast(t("msg.adjusted", { sku: it.sku, sign: dir > 0 ? "+" : "−", q }));
   },
   async addOrder() {
@@ -169,6 +235,83 @@ const A = {
     if (!needWrite() || !confirm(t("ask.delOrder"))) return;
     await store.deleteOrder(el.dataset.id);
   },
+  // ---- expiry ----
+  async readDate(el) {
+    const box = el.form?.elements[el.dataset.for] || $("#" + el.dataset.for);
+    const photo = await pickPhoto();
+    if (!photo) return;
+    const label = el.textContent;
+    try {
+      const { readExpiry } = await import("./lib/ocr.js");
+      const r = await readExpiry(photo, (stage) => (el.textContent = t("ocr." + stage)));
+      if (!r.expiry) return toast(t("ocr.none"), true);
+      box.value = scanner.typedDate(r.expiry);
+      checkExpiry(box);
+      if (box.id == "sexp") scanner.dateTyped();
+      toast(t("ocr.found", { d: dateText(r.expiry) }));
+    } finally {
+      el.textContent = label;
+    }
+  },
+  async writeOff(el) {
+    if (!needWrite()) return;
+    const lot = state.lots.find((l) => l.id == el.dataset.id),
+      it = lot && state.items.find((i) => i.id == lot.item_id);
+    if (!it || !confirm(t("ask.writeOff", { n: +lot.qty, name: it.name, d: dateText(lot.expiry) }))) return;
+    await store.writeOffLot(lot.id);
+    toast(t("msg.writtenOff", { n: +lot.qty, sku: it.sku }));
+  },
+  // ---- product photo: barcode + on-device model ----
+  async identify(el) {
+    const fm = el.form;
+    if (!(await isCached()) && !confirm(t("ai.ask", { mb: MODEL_MB }))) return;
+    const photo = await pickPhoto();
+    if (!photo) return;
+    const label = el.textContent;
+    try {
+      // The same photo often shows the barcode: fill it in if the form has none.
+      const codes = await detectImage(photo).catch(() => []);
+      if (codes[0] && !fm.elements.barcode.value) {
+        fm.elements.barcode.value = codes[0].rawValue;
+        if (!fm.elements.sku.value) fm.elements.sku.value = codes[0].rawValue;
+      }
+      el.textContent = t("ai.loading");
+      const r = await identify(photo, (p) => (el.textContent = t("ai.download", { pct: Math.round((p.loaded / p.total) * 100) })));
+      el.textContent = t("ai.thinking");
+      if (r.name) fm.elements.name.value = r.name;
+      // The type is only filled when the name gives it away; otherwise the
+      // person picks it, rather than the app guessing consumable or not.
+      if (r.type) {
+        if (!fm.elements.category.value) fm.elements.category.value = t("cat." + r.type);
+        fm.elements.kind.value = r.kind;
+        fm.elements.kind.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      const s = (r.ms / 1000).toFixed(1);
+      toast(r.type ? t("ai.done", { name: r.name, type: t("cat." + r.type), s }) : t("ai.pickType", { name: r.name, s }));
+    } finally {
+      el.textContent = label;
+    }
+  },
+  // ---- the till ----
+  posAdd: (el) => till.add(el.dataset.id),
+  posInc: (el) => till.inc(el.dataset.id, 1),
+  posDec: (el) => till.inc(el.dataset.id, -1),
+  posDel: (el) => till.remove(el.dataset.id),
+  posClear: () => till.clear(),
+  posMethod: (el) => till.setMethod(el.dataset.m),
+  posQuick: (el) => till.quick(el.dataset.v),
+  async posCharge() {
+    try {
+      await till.charge();
+    } finally {
+      setTimeout(till.refresh); // after run() re-enables the button, set it right
+    }
+  },
+  posReceipt: (el) => till.showReceipt(el.dataset.id),
+  posPrint: (el) => till.printSale(el.dataset.id),
+  posVoid: (el) => till.voidIt(el.dataset.id),
+  posCam: () => (scanner.active() ? scanner.cam(false) : scanner.cam(true, till.addCode)),
+  closeDlg: () => $("#dlg").close(),
   quickScan: () => go("scan", true),
   scanView: () => go("scan"),
   camOn: () => scanner.cam(true),
@@ -188,15 +331,51 @@ const A = {
   },
   signOut: () => store.signOut(),
   lang: () => switchLang(other()),
+  install: () => installApp(),
   top: () => scrollTo({ top: 0, behavior: "smooth" }),
 };
+
+// ---------- install as an app ----------
+// Chrome offers an install button in the address bar, which most shop owners
+// never notice, so put one in the header. The browser only lets us ask once it
+// has decided the app qualifies, hence the saved event.
+let installPrompt = null;
+const installBtn = () => $("#install");
+
+addEventListener("beforeinstallprompt", (ev) => {
+  ev.preventDefault(); // keep the browser's own mini-bar from appearing
+  installPrompt = ev;
+  installBtn().hidden = false;
+});
+addEventListener("appinstalled", () => {
+  installPrompt = null;
+  installBtn().hidden = true;
+});
+
+async function installApp() {
+  if (!installPrompt) return;
+  const p = installPrompt;
+  installPrompt = null; // the event can only be used once
+  installBtn().hidden = true;
+  await p.prompt();
+  await p.userChoice;
+  // Whether they accepted or not, this event is spent. The button stays hidden
+  // until the browser offers another one, which it does on a later visit;
+  // showing it again now would leave a button that does nothing.
+}
 
 // Language is only ever a redraw: every view reads t() at render time.
 function switchLang(l) {
   setLang(l);
   applyStatic();
   tick();
-  if (state.shop) render();
+  if (state.shop) render(true);
+}
+
+// The scanner's expiry box only matters when receiving.
+function syncScanView() {
+  const l = $("#sexpl");
+  if (l) l.hidden = $("#mode").value != "in";
 }
 
 const INPUT = {
@@ -218,6 +397,16 @@ const INPUT = {
     toast(n ? tn("msg.imported", n) : t("msg.importNone"));
   },
   lang: (el) => switchLang(el.value),
+  invFilter(el) {
+    invUi.f = el.value;
+    $("#tb").innerHTML = invRows(state);
+  },
+  pos: (el) => till.typed(el),
+  scanMode: () => syncScanView(),
+  scanExpiry(el) {
+    checkExpiry(el);
+    scanner.dateTyped();
+  },
 };
 
 // One delegated handler for every button; errors become a toast.
@@ -237,18 +426,33 @@ document.addEventListener("click", (ev) => {
 });
 document.addEventListener("input", (ev) => {
   const k = ev.target.dataset?.input;
-  if (k == "search" || k == "conv") INPUT[k](ev.target);
+  if (["search", "conv", "pos", "scanExpiry"].includes(k)) INPUT[k](ev.target);
 });
 document.addEventListener("change", (ev) => {
   const k = ev.target.dataset?.input;
-  if (k == "setting" || k == "importCsv" || k == "lang" || (k == "conv" && ev.target.tagName == "SELECT"))
+  if (
+    ["setting", "importCsv", "lang", "invFilter", "scanMode"].includes(k) ||
+    (k == "conv" && ev.target.tagName == "SELECT")
+  )
     run(INPUT[k], ev.target);
 });
 document.addEventListener("keydown", (ev) => {
-  if (ev.key == "Enter" && ev.target.dataset?.input == "manualScan") {
-    scanner.onScan(ev.target.value);
-    ev.target.value = "";
+  if (ev.key != "Enter") return;
+  const el = ev.target;
+  if (el.dataset?.input == "manualScan") {
+    scanner.onScan(el.value);
+    el.value = "";
   }
+  // The till: a USB scanner types the code and presses Enter.
+  if (el.id == "pq") {
+    ev.preventDefault();
+    till.addCode(el.value);
+  }
+  if (el.id == "ppaid" || el.id == "pdisc") {
+    ev.preventDefault();
+    run(A.posCharge, $("#pcharge"));
+  }
+  if (el.dataset?.qty) el.blur();
 });
 
 // ---------- start ----------
@@ -263,7 +467,7 @@ async function enter() {
 
 const tick = () => {
   const d = new Date();
-  $("#clk").textContent = d.toLocaleDateString(locale()) + " " + d.toLocaleTimeString(locale());
+  $("#clk").textContent = fDateTime(d);
 };
 applyStatic();
 tick();

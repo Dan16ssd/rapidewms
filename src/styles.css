@@ -14,8 +14,12 @@ html {
 body {
   background: #06040d;
   color: #ece8f8;
+  /* Noto Sans Lao carries only Lao glyphs, so Latin characters fall through to
+     the system face one by one. Naming it first means Lao never depends on
+     whatever font the device happens to ship with. */
   font:
-    15px system-ui,
+    15px "Noto Sans Lao",
+    system-ui,
     -apple-system,
     Segoe UI,
     Roboto,
@@ -489,4 +493,285 @@ nav a {
 }
 [hidden] {
   display: none !important;
+}
+
+/* ---------- Lao typography ----------
+   Lao stacks vowel signs above the letter and tone marks below it, so a size
+   and leading that read comfortably in Latin crowd and clip in Lao. These rules
+   apply only while the interface is in Lao; English keeps the tighter scale it
+   was designed with. src/i18n/index.js sets `lang` on <html>. */
+:root[lang="lo"] body {
+  line-height: 1.7;
+}
+:root[lang="lo"] :is(label, nav a em, nav h6, th, .tag, .plan) {
+  font-size: 13px;
+}
+:root[lang="lo"] :is(.clk, .eng, h3 small, .mut, .err) {
+  font-size: 14px;
+}
+@media (max-width: 700px) {
+  /* The phone table turns each row into labelled lines, so these two carry most
+     of the Lao a shop owner actually reads. */
+  :root[lang="lo"] :is(.sh, .rt td:before) {
+    font-size: 13px;
+  }
+  :root[lang="lo"] .btn {
+    font-size: 14px;
+  }
+}
+
+/* ---------- forms: buttons beside a field, notes under it ---------- */
+.tools {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+}
+.tools > input {
+  flex: 1 1 auto;
+  margin: 0;
+}
+.tools > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+label small {
+  display: block;
+  margin-top: 4px;
+}
+.bad {
+  color: #f87171;
+}
+.c {
+  text-align: center;
+}
+.pad {
+  padding: 24px 0;
+}
+.tag.consumable {
+  background: #10291b;
+  color: #4ade80;
+}
+.tag.durable {
+  color: #b9b0d6;
+}
+nav a em.warn {
+  border-color: #fbbf24;
+}
+tr.void td {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
+/* ---------- camera with the AR overlay ---------- */
+.cam {
+  position: relative;
+  max-width: 560px;
+  margin: 12px auto 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #000;
+}
+.cam video {
+  display: block;
+  width: 100%;
+}
+.cam canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.cam .torch {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+}
+
+/* ---------- the till ---------- */
+.pos {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 22px;
+  align-items: start;
+}
+.pos > div:first-child > * + * {
+  margin-top: 22px;
+}
+.pos .wide {
+  grid-column: 1 / -1;
+}
+.pay {
+  position: sticky;
+  top: 16px;
+}
+.pay .sh {
+  margin-top: 10px;
+}
+.pay .n {
+  margin: 4px 0 0;
+}
+.pay .n.big {
+  font-size: clamp(30px, 7vw, 42px);
+}
+.seg {
+  margin-top: 14px;
+}
+.seg > button {
+  flex: 1 1 0;
+  justify-content: center;
+}
+.seg > button.on {
+  background: #6d33e8;
+  border-color: #8b5cf6;
+}
+.quick {
+  margin-top: 8px;
+}
+.quick > .g {
+  flex: 1 1 40%;
+  justify-content: center;
+  padding: 8px;
+}
+.charge {
+  width: 100%;
+  justify-content: center;
+  font-size: 20px;
+  padding: 16px;
+  margin-top: 18px;
+}
+.pay > .g.mt {
+  width: 100%;
+  justify-content: center;
+}
+.sug {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sug:not(:empty) {
+  margin-top: 10px;
+}
+.sug button {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  text-align: left;
+}
+.sug small {
+  color: #9a90bd;
+}
+table.cart td {
+  white-space: normal;
+  vertical-align: middle;
+}
+.cart .qty {
+  white-space: nowrap;
+}
+.cart .qty input {
+  width: 64px;
+  margin: 0 4px;
+  padding: 8px 4px;
+  text-align: center;
+}
+.cart .qty button,
+.cart td > button {
+  padding: 8px 12px;
+}
+.cart .lt {
+  text-align: right;
+  font-weight: 600;
+}
+@media (max-width: 900px) {
+  .pos {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .pay {
+    position: static;
+  }
+}
+@media (max-width: 700px) {
+  /* A cart line on a phone: name on top, quantity and total below it. */
+  table.cart tr {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 0;
+    border-bottom: 1px solid #1d1538;
+  }
+  table.cart td {
+    border: 0;
+    padding: 0;
+  }
+  table.cart td.nm {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ---------- receipt, on screen and on paper ---------- */
+.receipt {
+  background: #fff;
+  color: #000;
+  padding: 14px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  max-width: 320px;
+  margin: auto;
+}
+.receipt h4 {
+  text-align: center;
+  font-size: 16px;
+}
+.receipt p {
+  margin: 6px 0;
+}
+.receipt table {
+  width: 100%;
+  font-size: 13px;
+}
+.receipt td {
+  padding: 2px 0;
+  border: 0;
+  white-space: normal;
+}
+.receipt td:last-child {
+  text-align: right;
+}
+.receipt tr.sub td {
+  padding-bottom: 6px;
+}
+.receipt .sum {
+  border-top: 1px dashed #000;
+  margin-top: 6px;
+}
+.receipt .big td {
+  font-size: 17px;
+  padding: 4px 0;
+}
+.receipt .void {
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+#print {
+  display: none;
+}
+@media print {
+  body.printing > :not(#print) {
+    display: none !important;
+  }
+  body.printing,
+  body.printing #print {
+    display: block;
+    background: #fff;
+  }
+  body.printing .receipt {
+    max-width: 72mm;
+    padding: 0;
+    font-size: 12px;
+  }
+  @page {
+    margin: 4mm;
+  }
 }

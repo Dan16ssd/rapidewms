@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="RAPIDEWMS">
+  <!-- Full bleed: Android crops a maskable icon to its own shape, so the mark
+       stays inside the middle 80% safe zone. -->
+  <rect width="512" height="512" fill="#120a2a"/>
+  <text x="168" y="358" font-size="268" font-family="Georgia, 'Times New Roman', 'Noto Serif', serif" font-style="italic" fill="#c4b5fd">R</text>
+  <path d="M152 136l13 35 35 13-35 13-13 35-13-35-35-13 35-13z" fill="#a78bfa"/>
+</svg>

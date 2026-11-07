@@ -27,7 +27,8 @@
         </div>
         <button class="btn" data-act="scanView" data-i18n="hdr.scanner">▥ Scanner</button
         ><button class="btn" data-act="zip" data-i18n="hdr.zip">⬇ Export .ZIP</button
-        ><button class="btn" data-act="lang" data-i18n="hdr.lang">ລາວ / EN</button>
+        ><button class="btn" data-act="lang" data-i18n="hdr.lang">ລາວ / EN</button
+        ><button class="btn" id="install" data-act="install" data-i18n="hdr.install" hidden>⬇ Install app</button>
       </header>
       <div class="wrap">
         <div>
@@ -40,6 +41,7 @@
     </div>
     <dialog id="dlg"></dialog>
     <div id="toast" role="status"></div>
+    <div id="print"></div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

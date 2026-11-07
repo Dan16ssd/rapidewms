@@ -7,6 +7,9 @@ export const state = {
   items: [],
   orders: [],
   movements: [], // last 30 days
+  lots: [], // units per expiry date, all of them
+  sales: [], // last 30 days
+  saleLines: [], // lines of those sales
   truncated: false, // true when the server held back older orders/movements
   online: navigator.onLine,
 };

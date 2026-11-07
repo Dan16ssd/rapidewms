@@ -1,0 +1,124 @@
+// Name a product from a photo with a small vision-language model that runs
+// on the device: no server, no per-photo cost, and the photo never leaves it.
+//
+// SmolVLM-256M is the smallest model that can look at a package and answer in
+// words. It downloads once (the size is shown before it starts) and the
+// browser keeps it. On a phone with WebGPU it answers in a few seconds; on
+// plain CPU it is slower. It reads Latin print well, Thai and Lao poorly, and
+// can be wrong, so what it says fills the form for a person to check.
+
+export const MODEL = "HuggingFaceTB/SmolVLM-256M-Instruct";
+// Measured download: 207 MB of model files plus the 5.5 MB runtime.
+export const MODEL_MB = 215;
+
+// Types a product can be, and whether each is used up (consumable, tracked for
+// expiry) or lasts (durable).
+export const TYPES = {
+  food: "consumable",
+  drink: "consumable",
+  medicine: "consumable",
+  cosmetic: "consumable",
+  household: "consumable",
+  clothing: "durable",
+  electronics: "durable",
+  tool: "durable",
+  other: "durable",
+};
+
+// The model names a product well but sorts it badly (tested: asked "can people
+// eat this?" it said yes to a hammer, a shirt and a charger). So it is asked
+// only for the name, and the type comes from the words in that name. First
+// match wins: appliances and tools are checked before food, so "rice cooker"
+// is not food. English, Lao and Thai,
+// because staff may correct the name in any of them.
+const WORDS = [
+  // Food whose name holds another type's word ("cream" is also a cosmetic).
+  ["food", "ice cream|ice-cream|cream cracker|cream biscuit|ไอศกรีม|ກະແລ້ມ"],
+  ["medicine", "paracetamol|tablet|capsule|medicine|pharma|vitamin|syrup|ointment|aspirin|ibuprofen|antibiotic|amoxicillin|bandage|plaster|drops|ຢາ|ยา"],
+  ["cosmetic", "shampoo|conditioner|lotion|cream|soap|toothpaste|tooth paste|deodorant|perfume|lipstick|makeup|make-up|sunscreen|face wash|cleanser|talc|ແຊມພູ|ສະບູ|ຢາສີຟັນ|ແຊມພູ|แชมพู|สบู่|ยาสีฟัน|โลชั่น"],
+  ["household", "detergent|bleach|cleaner|dishwash|dish soap|tissue|toilet paper|napkin|insecticide|mosquito|air freshener|garbage bag|trash bag|washing powder|softener|battery|batteries|candle|ຜົງຊັກຟອກ|ເຈ້ຍທິດຊູ|ผงซักฟอก|ทิชชู่"],
+  ["electronics", "charger|cable|phone|usb|headphone|earphone|speaker|adapter|power bank|powerbank|bulb|lamp|fan|radio|remote|electric|ສາຍສາກ|โทรศัพท์|สายชาร์จ|cooker|kettle|blender|microwave|heater|iron|torch|flashlight|ໝໍ້ຫຸງເຂົ້າ|หม้อหุงข้าว"],
+  ["tool", "hammer|screwdriver|wrench|spanner|pliers|saw|drill|knife|scissors|tape measure|shovel|hoe|axe|ຄ້ອນ|ມີດ|ค้อน|มีด|ไขควง"],
+  ["clothing", "shirt|t-shirt|tshirt|pants|trousers|jeans|dress|sock|shoe|sandal|slipper|hat|cap|jacket|skirt|underwear|ເສື້ອ|ໂສ້ງ|ເກີບ|เสื้อ|กางเกง|รองเท้า"],
+  ["drink", "water|drink|juice|milk|soda|cola|coffee|tea|beer|wine|whisky|liquor|beverage|energy|yogurt|yoghurt|ນ້ຳ|ນົມ|ເບຍ|ກາເຟ|ນ້ຳດື່ມ|น้ำ|นม|เบียร์|กาแฟ"],
+  ["food", "chip|crisp|snack|noodle|rice|bread|biscuit|cookie|cake|candy|sweet|chocolate|sauce|oil|sugar|salt|egg|meat|fish|sardine|tuna|fruit|vegetable|cereal|canned|seasoning|ketchup|mayonnaise|cracker|wafer|jam|butter|cheese|flour|instant|ເຂົ້າ|ໝີ່|ເສັ້ນ|ຂະໜົມ|ນ້ຳປາ|ข้าว|บะหมี่|ขนม|น้ำปลา"],
+];
+// A plain substring test, because Lao and Thai have no spaces between words.
+// "tea" inside "steak" would be a false hit in English, so Latin words must
+// start at a word boundary.
+const RX = WORDS.map(([type, w]) => [
+  type,
+  new RegExp(
+    w
+      .split("|")
+      .map((x) => (/^[a-z]/.test(x) ? "\\b" + x : x))
+      .join("|"),
+    "i",
+  ),
+]);
+
+/** The type a product name points to, or "" when nothing in it is known. */
+export function typeOf(name) {
+  return RX.find(([, rx]) => rx.test(name || ""))?.[0] || "";
+}
+
+// "This product is a hammer." → "Hammer"
+export function cleanName(text) {
+  let s = String(text || "").split("\n")[0].trim();
+  s = s.replace(/^(this|the)\s+(product|image|object|item)\s+(is|shows)\s+(an?\s+|the\s+)?/i, "");
+  s = s.replace(/^(an?|the)\s+/i, "").replace(/[.。!]+$/, "").trim();
+  return (s.charAt(0).toUpperCase() + s.slice(1)).slice(0, 80);
+}
+
+let loading = null;
+
+export const isCached = async () => {
+  try {
+    const c = await caches.open("transformers-cache");
+    return (await c.keys()).some((r) => r.url.includes(MODEL));
+  } catch {
+    return false;
+  }
+};
+
+function load(onProgress) {
+  return (loading ||= (async () => {
+    const T = await import("@huggingface/transformers");
+    const device = (await navigator.gpu?.requestAdapter?.().catch(() => null)) ? "webgpu" : "wasm";
+    const progress = (p) => {
+      if (p.status == "progress" && p.total) onProgress?.({ file: p.file, loaded: p.loaded, total: p.total });
+    };
+    const processor = await T.AutoProcessor.from_pretrained(MODEL, { progress_callback: progress });
+    const model = await T.AutoModelForVision2Seq.from_pretrained(MODEL, {
+      dtype: { embed_tokens: "fp16", vision_encoder: "q4", decoder_model_merged: "q4" },
+      device,
+      progress_callback: progress,
+    });
+    return { T, processor, model, device };
+  })().catch((e) => {
+    loading = null;
+    throw e;
+  }));
+}
+
+const PROMPT = "What is this product? Answer with its name only, including brand and size if printed.";
+
+/**
+ * { name, type, kind, raw, ms, device } for a photo of a product. type and kind
+ * are "" when the name gives no clue, so the person picks them.
+ */
+export async function identify(file, onProgress) {
+  const { T, processor, model, device } = await load(onProgress);
+  const t0 = performance.now();
+  const image = await T.RawImage.fromBlob(file);
+  const messages = [{ role: "user", content: [{ type: "image" }, { type: "text", text: PROMPT }] }];
+  const prompt = processor.apply_chat_template(messages, { add_generation_prompt: true });
+  const inputs = await processor(prompt, [image], { do_image_splitting: false });
+  const out = await model.generate({ ...inputs, max_new_tokens: 24, do_sample: false });
+  const [raw] = processor.batch_decode(out.slice(null, [inputs.input_ids.dims.at(-1), null]), {
+    skip_special_tokens: true,
+  });
+  const name = cleanName(raw),
+    type = typeOf(name);
+  return { name, type, kind: type ? TYPES[type] : "", raw, ms: Math.round(performance.now() - t0), device };
+}

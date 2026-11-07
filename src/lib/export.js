@@ -5,9 +5,15 @@ import { dt, download } from "./util.js";
 // Headers and type words stay English on purpose: csvToItems() matches these
 // header names when a shop re-imports its own export, and jsPDF has no Lao font
 // yet. Localise both together once the font is bundled.
+export const SETS = ["Inventory", "Sales", "Expiry", "Orders", "Movements"];
+
 export const sets = (s) => {
   const bySku = new Map(s.items.map((i) => [i.id, i.sku])),
-    sku = (id) => bySku.get(id) ?? "";
+    sku = (id) => bySku.get(id) ?? "",
+    byId = new Map(s.items.map((i) => [i.id, i])),
+    next = new Map();
+  for (const l of s.lots || []) if (!next.has(l.item_id)) next.set(l.item_id, l.expiry);
+  const sale = new Map((s.sales || []).map((x) => [x.id, x]));
   return {
     Inventory: [
       [
@@ -22,6 +28,9 @@ export const sets = (s) => {
         "Wholesale (LAK)",
         "Wholesale min",
         "Value (LAK)",
+        // Appended, never inserted: older exports must still import.
+        "Kind",
+        "Next expiry",
       ],
       ...s.items.map((i) => [
         i.sku,
@@ -35,7 +44,38 @@ export const sets = (s) => {
         +i.price_wholesale || 0,
         +i.wholesale_min_qty || 0,
         i.qty * i.cost,
+        i.kind == "consumable" ? "consumable" : "durable",
+        next.get(i.id) || "",
       ]),
+    ],
+    Sales: [
+      ["Date", "Receipt", "SKU", "Name", "Qty", "Unit price (LAK)", "Wholesale", "Line total (LAK)", "Method", "Status"],
+      ...(s.saleLines || [])
+        .filter((l) => sale.has(l.sale_id))
+        .map((l) => {
+          const x = sale.get(l.sale_id);
+          return [
+            dt(x.created_at),
+            x.receipt_no,
+            l.sku,
+            l.name,
+            +l.qty,
+            +l.unit_price,
+            l.wholesale ? "yes" : "",
+            +l.line_total,
+            x.method,
+            x.status,
+          ];
+        }),
+    ],
+    Expiry: [
+      ["SKU", "Name", "Expiry", "Qty", "Value (LAK)"],
+      ...(s.lots || [])
+        .filter((l) => byId.has(l.item_id))
+        .map((l) => {
+          const i = byId.get(l.item_id);
+          return [i.sku, i.name, l.expiry, +l.qty, l.qty * i.cost];
+        }),
     ],
     Orders: [
       ["Date", "Type", "SKU", "Qty", "Party", "Status"],
@@ -78,7 +118,19 @@ export async function exportZip(s) {
   for (const k in all) z.file(k + ".csv", "﻿" + toCsv(all[k]));
   z.file(
     "backup.json",
-    JSON.stringify({ shop: s.shop, items: s.items, orders: s.orders, movements: s.movements }, null, 1),
+    JSON.stringify(
+      {
+        shop: s.shop,
+        items: s.items,
+        lots: s.lots,
+        orders: s.orders,
+        movements: s.movements,
+        sales: s.sales,
+        sale_lines: s.saleLines,
+      },
+      null,
+      1,
+    ),
   );
   download(await z.generateAsync({ type: "blob" }), "RAPIDEWMS-bundle.zip");
 }

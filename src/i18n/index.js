@@ -22,6 +22,33 @@ export const lang = () => cur;
 // Western digits in both languages: Lao shops write prices with 0-9.
 export const locale = () => (cur == "lo" ? "lo-LA-u-nu-latn" : "en");
 
+// Dates and times. Chrome and Edge ship no Lao date data ("lo" silently falls
+// back to US English: "Nov 7, 2026, 3:30 PM"), so Lao is formatted here, from
+// the CLDR month abbreviations, day first and on a 24-hour clock.
+const LO_MONTHS = ["ມ.ກ.", "ກ.ພ.", "ມ.ນ.", "ມ.ສ.", "ພ.ພ.", "ມິ.ຖ.", "ກ.ລ.", "ສ.ຫ.", "ກ.ຍ.", "ຕ.ລ.", "ພ.ຈ.", "ທ.ວ."];
+const p2 = (n) => String(n).padStart(2, "0");
+const D = (x) => (x instanceof Date ? x : new Date(x));
+/** 7/11/2026 */
+export const fDate = (x) => {
+  const d = D(x);
+  return cur == "lo" ? `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}` : d.toLocaleDateString("en");
+};
+/** 7 ພ.ຈ. 2026 / Nov 7, 2026 */
+export const fDateLong = (x) => {
+  const d = D(x);
+  return cur == "lo"
+    ? `${d.getDate()} ${LO_MONTHS[d.getMonth()]} ${d.getFullYear()}`
+    : d.toLocaleDateString("en", { day: "numeric", month: "short", year: "numeric" });
+};
+/** 15:30:47 / 3:30:47 PM */
+export const fTime = (x, seconds = true) => {
+  const d = D(x);
+  return cur == "lo"
+    ? `${p2(d.getHours())}:${p2(d.getMinutes())}${seconds ? ":" + p2(d.getSeconds()) : ""}`
+    : d.toLocaleTimeString("en", seconds ? {} : { hour: "numeric", minute: "2-digit" });
+};
+export const fDateTime = (x) => `${fDate(x)} ${fTime(x)}`;
+
 export function setLang(l) {
   if (!DICT[l]) return;
   cur = l;
