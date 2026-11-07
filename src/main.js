@@ -23,7 +23,7 @@ import sys from "./views/sys.js";
 import pos, * as till from "./views/pos.js";
 import exp from "./views/exp.js";
 import { status, SOON_DAYS } from "./lib/expiry.js";
-import { MODEL_MB, isCached, identify } from "./lib/identify.js";
+import { MODEL_MB, isCached, identify, shrink, crashedBefore } from "./lib/identify.js";
 import { detectImage } from "./lib/camera.js";
 
 const VIEWS = { dash, pos, inv, exp, ord, scan, rep, auto, sys };
@@ -281,11 +281,14 @@ const A = {
     const fm = el.form;
     // The camera must open first, straight from the tap: iPhone Safari ignores
     // a file picker opened after anything is awaited, and nothing happens.
-    const photo = await pickPhoto();
+    let photo = await pickPhoto();
     if (!photo) return;
+    // Last time the page closed while the AI was working: say so, don't loop.
+    if (crashedBefore() && !confirm(t("ai.crashed"))) return;
     if (!(await isCached()) && !confirm(t("ai.ask", { mb: MODEL_MB }))) return;
     let label = el.textContent;
     try {
+      photo = await shrink(photo);
       // The same photo often shows the barcode: fill it in if the form has none.
       const codes = await detectImage(photo).catch(() => []);
       if (codes[0] && !fm.elements.barcode.value) {

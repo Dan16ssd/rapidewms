@@ -298,6 +298,7 @@ export default {
   "ai.loading": "Loading AI…",
   "ai.download": "Downloading {pct}% ({mb} / {total} MB)",
   "ai.thinking": "Looking…",
+  "ai.crashed": "Last time the AI was working, this phone ran out of memory and closed the page. Close other apps and browser tabs first. Try again?",
   "ai.pickType": "Suggested: {name} in {s}s – choose consumable or not yourself",
   "ai.done": "Suggested: {name} ({type}) in {s}s – check before saving",
   "cat.food": "Food",

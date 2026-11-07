@@ -10,8 +10,77 @@
 export const MODEL = "HuggingFaceTB/SmolVLM-256M-Instruct";
 // Must match node_modules/onnxruntime-web (the version transformers.js bundles).
 const ORT = "1.31.0-dev.20260914-8d85527a0";
-// Measured download: 207 MB of model files plus the 5.5 MB runtime.
-export const MODEL_MB = 215;
+// The 8-bit word table: half the size and memory of the 16-bit one, same
+// answers (measured: page peak 947 → 792 MB in Chrome).
+const DTYPE = { embed_tokens: "int8", vision_encoder: "q4", decoder_model_merged: "q4" };
+// Measured download: 179 MB of model files plus the 5.5 MB runtime.
+const BYTES = 179e6;
+export const MODEL_MB = 185;
+
+// iPhone Safari closes a page that uses too much memory ("A problem repeatedly
+// occurred"). WebGPU is fastest and lightest for the page itself, but if the
+// page died while using it, the next try runs on the CPU instead: slower
+// (about 17 s here), with no graphics memory. localStorage
+// "rapidewms.ai.device" = "webgpu" / "wasm" forces one.
+async function pickDevice() {
+  const forced = ls()?.getItem("rapidewms.ai.device");
+  if (forced) return forced;
+  if (ls()?.getItem(NO_GPU)) return "wasm";
+  return (await navigator.gpu?.requestAdapter?.().catch(() => null)) ? "webgpu" : "wasm";
+}
+
+// The model sees the photo at 512 px, but a phone photo is 12–48 megapixels:
+// 50–200 MB once decoded. Shrink it once, before anything looks at it.
+export async function shrink(file, max = 1024) {
+  let bmp;
+  try {
+    bmp = await createImageBitmap(file);
+  } catch {
+    return file;
+  }
+  const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  if (k == 1) return bmp.close?.(), file;
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * k);
+  c.height = Math.round(bmp.height * k);
+  c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close?.();
+  const out = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.9));
+  c.width = c.height = 0; // let Safari free the canvas memory now
+  return out || file;
+}
+
+// If the page dies while the model loads or looks (the phone ran out of
+// memory), the mark below survives; the next start sees it and the app asks
+// before trying again, instead of crashing the same way.
+const TRYING = "rapidewms.ai.trying",
+  CRASHED = "rapidewms.ai.crashed",
+  NO_GPU = "rapidewms.ai.noGpu"; // stays: this device crashes with WebGPU
+const ls = () => globalThis.localStorage;
+export function crashedBefore() {
+  try {
+    const was = ls()?.getItem(TRYING);
+    if (was) {
+      ls().setItem(CRASHED, was);
+      if (was == "webgpu") ls().setItem(NO_GPU, "1");
+      ls().removeItem(TRYING);
+    }
+    return !!ls()?.getItem(CRASHED);
+  } catch {
+    return false;
+  }
+}
+// The mark holds the device in use, so a crash on WebGPU moves to the CPU.
+const mark = (device) => {
+  try {
+    device ? ls()?.setItem(TRYING, device) : ls()?.removeItem(TRYING);
+  } catch {}
+};
+const workedHere = () => {
+  try {
+    ls()?.removeItem(CRASHED);
+  } catch {}
+};
 
 // Types a product can be, and whether each is used up (consumable, tracked for
 // expiry) or lasts (durable).
@@ -75,7 +144,7 @@ export function cleanName(text) {
 // The model arrives as several files, each reporting its own 0–100%. This adds
 // them into one figure that only goes up: until every file has started, the
 // measured size stands in for the total so the bar does not run ahead.
-export function downloadMeter(onProgress, expected = 207e6) {
+export function downloadMeter(onProgress, expected = BYTES) {
   const files = new Map();
   let best = 0;
   return (p) => {
@@ -90,16 +159,31 @@ export function downloadMeter(onProgress, expected = 207e6) {
   };
 }
 
-let loading = null;
+let loading = null,
+  used = null; // the device the loaded model runs on
+
+// The files this device would load, e.g. "onnx/embed_tokens_int8.onnx".
+const files = () => Object.entries(DTYPE).map(([f, d]) => `onnx/${f}_${d}.onnx`);
 
 export const isCached = async () => {
   try {
     const c = await caches.open("transformers-cache");
-    return (await c.keys()).some((r) => r.url.includes(MODEL));
+    const urls = (await c.keys()).map((r) => r.url).filter((u) => u.includes(MODEL));
+    return files().every((f) => urls.some((u) => u.endsWith(f)));
   } catch {
     return false;
   }
 };
+
+// Files of an earlier set (the 16-bit word table) only take up space.
+async function dropOthers() {
+  try {
+    const c = await caches.open("transformers-cache"),
+      keep = files();
+    for (const r of await c.keys())
+      if (r.url.includes(MODEL) && r.url.endsWith(".onnx") && !keep.some((f) => r.url.endsWith(f))) await c.delete(r);
+  } catch {}
+}
 
 function load(onProgress) {
   return (loading ||= (async () => {
@@ -107,14 +191,16 @@ function load(onProgress) {
     // The 27 MB engine comes from the CDN, at exactly the version bundled
     // (the build drops its own copy); the service worker keeps it after.
     T.env.backends.onnx.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT}/dist/`;
-    const device = (await navigator.gpu?.requestAdapter?.().catch(() => null)) ? "webgpu" : "wasm";
+    const device = await pickDevice();
+    mark((used = device));
     const progress = downloadMeter(onProgress);
     const processor = await T.AutoProcessor.from_pretrained(MODEL, { progress_callback: progress });
     const model = await T.AutoModelForVision2Seq.from_pretrained(MODEL, {
-      dtype: { embed_tokens: "fp16", vision_encoder: "q4", decoder_model_merged: "q4" },
+      dtype: DTYPE,
       device,
       progress_callback: progress,
     });
+    dropOthers();
     return { T, processor, model, device };
   })().catch((e) => {
     loading = null;
@@ -130,6 +216,17 @@ const PROMPT = "What is this product? Answer with its name only, including brand
  * once the model is ready, as it starts looking at the photo.
  */
 export async function identify(file, onProgress, onLook) {
+  mark(used || "loading");
+  try {
+    const r = await look(file, onProgress, onLook);
+    workedHere();
+    return r;
+  } finally {
+    mark(false);
+  }
+}
+
+async function look(file, onProgress, onLook) {
   const { T, processor, model, device } = await load(onProgress);
   onLook?.();
   const t0 = performance.now();
