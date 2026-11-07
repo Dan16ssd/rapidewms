@@ -72,6 +72,24 @@ export function cleanName(text) {
   return (s.charAt(0).toUpperCase() + s.slice(1)).slice(0, 80);
 }
 
+// The model arrives as several files, each reporting its own 0–100%. This adds
+// them into one figure that only goes up: until every file has started, the
+// measured size stands in for the total so the bar does not run ahead.
+export function downloadMeter(onProgress, expected = 207e6) {
+  const files = new Map();
+  let best = 0;
+  return (p) => {
+    if (p.status != "progress" || !p.total) return;
+    files.set(p.file, [p.loaded, p.total]);
+    let loaded = 0,
+      total = 0;
+    for (const [l, t] of files.values()) (loaded += l), (total += t);
+    total = Math.max(total, expected);
+    best = Math.max(best, Math.min(100, Math.floor((loaded / total) * 100)));
+    onProgress?.({ pct: best, loaded, total });
+  };
+}
+
 let loading = null;
 
 export const isCached = async () => {
@@ -90,9 +108,7 @@ function load(onProgress) {
     // (the build drops its own copy); the service worker keeps it after.
     T.env.backends.onnx.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT}/dist/`;
     const device = (await navigator.gpu?.requestAdapter?.().catch(() => null)) ? "webgpu" : "wasm";
-    const progress = (p) => {
-      if (p.status == "progress" && p.total) onProgress?.({ file: p.file, loaded: p.loaded, total: p.total });
-    };
+    const progress = downloadMeter(onProgress);
     const processor = await T.AutoProcessor.from_pretrained(MODEL, { progress_callback: progress });
     const model = await T.AutoModelForVision2Seq.from_pretrained(MODEL, {
       dtype: { embed_tokens: "fp16", vision_encoder: "q4", decoder_model_merged: "q4" },
@@ -110,10 +126,12 @@ const PROMPT = "What is this product? Answer with its name only, including brand
 
 /**
  * { name, type, kind, raw, ms, device } for a photo of a product. type and kind
- * are "" when the name gives no clue, so the person picks them.
+ * are "" when the name gives no clue, so the person picks them. onLook runs
+ * once the model is ready, as it starts looking at the photo.
  */
-export async function identify(file, onProgress) {
+export async function identify(file, onProgress, onLook) {
   const { T, processor, model, device } = await load(onProgress);
+  onLook?.();
   const t0 = performance.now();
   const image = await T.RawImage.fromBlob(file);
   const messages = [{ role: "user", content: [{ type: "image" }, { type: "text", text: PROMPT }] }];

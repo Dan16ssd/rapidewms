@@ -302,6 +302,16 @@ for (const [said, name, type] of [
     eq(cleanName(said), name, "name");
     eq(typeOf(cleanName(said)), type, "type");
   });
+await ok("download percent covers all files and never goes back", async () => {
+  const { downloadMeter } = await import("../src/lib/identify.js");
+  const seen = [];
+  const m = downloadMeter((p) => seen.push(p.pct), 100);
+  // Two files, the second starting after the first is done, as the library reports them.
+  for (const [file, loaded, total] of [["a", 0, 60], ["a", 30, 60], ["a", 60, 60], ["b", 0, 50], ["b", 25, 50], ["b", 50, 50]])
+    m({ status: "progress", file, loaded, total });
+  m({ status: "done", file: "b" });
+  eq(seen.join(","), "0,30,60,60,77,100", "percents");
+});
 await ok("every type is consumable or durable", () =>
   eq(Object.values(TYPES).every((k) => k == "consumable" || k == "durable"), true, "kinds"),
 );

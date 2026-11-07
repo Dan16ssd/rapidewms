@@ -151,7 +151,8 @@ async function itemForm(id, code) {
       label: t("f.name"),
       value: i.name,
       required: true,
-      tools: [{ act: "identify", label: t("btn.identify") }],
+      // "✓ AI ready" once the model is on this device and works offline.
+      tools: [{ act: "identify", label: t((await isCached()) ? "btn.identifyReady" : "btn.identify") }],
     },
     { k: "category", label: t("f.category"), value: i.category },
     {
@@ -267,7 +268,7 @@ const A = {
     if (!(await isCached()) && !confirm(t("ai.ask", { mb: MODEL_MB }))) return;
     const photo = await pickPhoto();
     if (!photo) return;
-    const label = el.textContent;
+    let label = el.textContent;
     try {
       // The same photo often shows the barcode: fill it in if the form has none.
       const codes = await detectImage(photo).catch(() => []);
@@ -276,8 +277,16 @@ const A = {
         if (!fm.elements.sku.value) fm.elements.sku.value = codes[0].rawValue;
       }
       el.textContent = t("ai.loading");
-      const r = await identify(photo, (p) => (el.textContent = t("ai.download", { pct: Math.round((p.loaded / p.total) * 100) })));
-      el.textContent = t("ai.thinking");
+      const mb = (b) => Math.round(b / 1e6);
+      const r = await identify(
+        photo,
+        // At 100% the files are in but the model still has to start up.
+        (p) =>
+          (el.textContent =
+            p.pct < 100 ? t("ai.download", { pct: p.pct, mb: mb(p.loaded), total: mb(p.total) }) : t("ai.loading")),
+        () => (el.textContent = t("ai.thinking")),
+      );
+      label = t("btn.identifyReady");
       if (r.name) fm.elements.name.value = r.name;
       // The type is only filled when the name gives it away; otherwise the
       // person picks it, rather than the app guessing consumable or not.
