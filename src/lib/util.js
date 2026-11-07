@@ -1,5 +1,5 @@
 import { t, locale, fDateTime, fDateLong } from "../i18n/index.js";
-import { parseTyped, daysLeft, status, SOON_DAYS } from "./expiry.js";
+import { parseTyped, slashDigits, daysLeft, status, SOON_DAYS } from "./expiry.js";
 
 // HTML-escape any value before putting it into markup or an attribute.
 export const E = (s) =>
@@ -72,7 +72,10 @@ export function form(title, fields, okLabel = t("btn.save"), note = "") {
   fm.addEventListener("change", sync);
   sync();
   fm.querySelectorAll("[data-expiry]").forEach((el) => {
-    el.addEventListener("input", () => checkExpiry(el));
+    el.addEventListener("input", (ev) => {
+      slashDate(el, ev);
+      checkExpiry(el);
+    });
     checkExpiry(el);
   });
   dlg.showModal();
@@ -92,6 +95,14 @@ export function form(title, fields, okLabel = t("btn.save"), note = "") {
       { once: true },
     ),
   );
+}
+
+// Add the slashes as digits are typed into an expiry box (only when typing at
+// the end, so deleting and correcting work as usual).
+export function slashDate(el, ev) {
+  if (!ev?.inputType?.startsWith("insert") || el.selectionStart != el.value.length) return;
+  const v = slashDigits(el.value);
+  if (v != el.value) el.value = v;
 }
 
 // Show the date an expiry box understood, and stop the form saving a typo.

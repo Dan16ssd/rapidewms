@@ -246,7 +246,7 @@ export default {
   "kind.durableLong": "Non-consumable – tools, clothes, electronics",
   "f.expiry": "Expiry date",
   "f.expiryAdded": "Expiry date of the stock you add",
-  "f.expiryPh": "e.g. 31/12/27 or 1227",
+  "f.expiryPh": "Type digits, e.g. 311227 → 31/12/27",
   "f.expiryHint": "Type it, or take a photo of the printed date. Leave empty if there is none.",
   "btn.readDate": "📷 Read date",
   "btn.identify": "📷 Identify",

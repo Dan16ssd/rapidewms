@@ -235,6 +235,21 @@ await cases("typed shortcuts at the counter", X.parseTyped, [
   ["310227", null], // 31 Feb
   ["", null],
 ]);
+await cases("slashes added while typing digits (iPhone number pad has no /)", X.slashDigits, [
+  ["3112", "31/12"],
+  ["311227", "31/12/27"],
+  ["31122027", "31/12/2027"],
+  ["20122027", "20/12/2027"], // 20 Dec, not a year-first date
+  ["20271231", "20271231"], // year first: left as typed
+  ["1227", "12/27"],
+  ["062026", "06/2026"], // month and 4-digit year
+  ["31/12/27", "31/12/27"], // already slashed
+  ["31.12.27", "31.12.27"], // other characters: left alone
+]);
+ok("the slashes never change which date is meant", () => {
+  for (const d of ["1227", "0228", "311227", "122027", "31122027", "20271231", "20122027", "062026", "150626", "310227", "12345"])
+    eq(X.parseTyped(X.slashDigits(d)), X.parseTyped(d), d);
+});
 await cases("dates as printed on packages", X.parseExpiry, [
   ["EXP 12/05/2027", "2027-05-12"], // day first, as in Laos and Thailand
   ["EXP: 05/12/2027", "2027-12-05"],

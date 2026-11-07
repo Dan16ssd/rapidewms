@@ -50,8 +50,27 @@ const mon = (s) => MONTHS.indexOf(s.slice(0, 3)) + 1;
  *   20271231  → 31 Dec 2027         (YYYYMMDD)
  * Anything else goes through the same reader as printed text.
  */
+/**
+ * Slashes put in while a date is typed as digits: "311227" shows as
+ * "31/12/27". The iPhone number pad has no "/" key, so without this the
+ * familiar form cannot be typed there. "1227" becomes "12/27" (month/year);
+ * 8 digits starting 20xx are left as a year-first date. Anything with other
+ * characters in it is left alone.
+ */
+export function slashDigits(v) {
+  if (!/^[\d/]*$/.test(v)) return v;
+  const d = v.replace(/\//g, "").slice(0, 8);
+  if (d.length == 8 && /^2[01]/.test(d) && mk(d.slice(0, 4), d.slice(4, 6), d.slice(6))) return d;
+  // 6 digits that are no day/month/year are month and 4-digit year: 06/2026.
+  if (d.length == 6 && !mk(d.slice(4), d.slice(2, 4), d.slice(0, 2)) && mk(d.slice(2), d.slice(0, 2)))
+    return d.slice(0, 2) + "/" + d.slice(2);
+  return [d.slice(0, 2), d.slice(2, 4), d.slice(4)].filter(Boolean).join("/");
+}
+
 export function parseTyped(s) {
-  const t = String(s || "").trim();
+  let t = String(s || "").trim();
+  // Slashes the box put in itself mean nothing more than the digits did.
+  if (t.includes("/") && /^[\d/]+$/.test(t) && slashDigits(t.replace(/\//g, "")) == t) t = t.replace(/\//g, "");
   if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return mk(t.slice(0, 4), t.slice(5, 7), t.slice(8));
   const d = t.replace(/\s+/g, "");
   if (/^\d+$/.test(d)) {

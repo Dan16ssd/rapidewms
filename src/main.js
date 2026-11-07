@@ -5,7 +5,7 @@ import "@fontsource/noto-sans-lao/lao-400.css";
 import "@fontsource/noto-sans-lao/lao-500.css";
 import "@fontsource/noto-sans-lao/lao-600.css";
 import "@fontsource/noto-sans-lao/lao-700.css";
-import { $, E, toast, form, pickPhoto, checkExpiry, dateText } from "./lib/util.js";
+import { $, E, toast, form, pickPhoto, checkExpiry, slashDate, dateText } from "./lib/util.js";
 import { t, tn, errText, setLang, other, applyStatic, fDateTime, fTime } from "./i18n/index.js";
 import { csvToItems } from "./lib/csv.js";
 import { exportSet, exportZip } from "./lib/export.js";
@@ -469,6 +469,7 @@ document.addEventListener("click", (ev) => {
 });
 document.addEventListener("input", (ev) => {
   const k = ev.target.dataset?.input;
+  if (k == "scanExpiry") slashDate(ev.target, ev);
   if (["search", "conv", "pos", "scanExpiry"].includes(k)) INPUT[k](ev.target);
 });
 document.addEventListener("change", (ev) => {
