@@ -8,6 +8,8 @@
 // can be wrong, so what it says fills the form for a person to check.
 
 export const MODEL = "HuggingFaceTB/SmolVLM-256M-Instruct";
+// Must match node_modules/onnxruntime-web (the version transformers.js bundles).
+const ORT = "1.31.0-dev.20260914-8d85527a0";
 // Measured download: 207 MB of model files plus the 5.5 MB runtime.
 export const MODEL_MB = 215;
 
@@ -84,6 +86,9 @@ export const isCached = async () => {
 function load(onProgress) {
   return (loading ||= (async () => {
     const T = await import("@huggingface/transformers");
+    // The 27 MB engine comes from the CDN, at exactly the version bundled
+    // (the build drops its own copy); the service worker keeps it after.
+    T.env.backends.onnx.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT}/dist/`;
     const device = (await navigator.gpu?.requestAdapter?.().catch(() => null)) ? "webgpu" : "wasm";
     const progress = (p) => {
       if (p.status == "progress" && p.total) onProgress?.({ file: p.file, loaded: p.loaded, total: p.total });

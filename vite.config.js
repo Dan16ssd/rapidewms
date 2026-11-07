@@ -7,6 +7,16 @@ import { VitePWA } from "vite-plugin-pwa";
 export default defineConfig(({ mode }) => ({
   plugins: [
     ...(mode == "lan" ? [basicSsl()] : []),
+    // The AI engine (onnxruntime, 27 MB) is loaded from jsDelivr by identify.js
+    // only when someone identifies a product, so the copy Vite emits is never
+    // used. Shipping it made the GitHub Pages deploy time out.
+    {
+      name: "drop-ort-wasm",
+      apply: "build",
+      generateBundle(_, bundle) {
+        for (const k of Object.keys(bundle)) if (/ort-wasm.*\.wasm$/.test(k)) delete bundle[k];
+      },
+    },
     // Installable app: a shop gets RAPIDÉWMS in the Windows Start menu or on an
     // Android home screen, in its own window, and it opens without internet.
     //
@@ -75,7 +85,10 @@ export default defineConfig(({ mode }) => ({
           },
           {
             // The AI runtime and its engine, kept after first use.
-            urlPattern: /\/assets\/(transformers\.web|ort-wasm)[-.][^/]*$/,
+            // The engine comes from jsDelivr (see identify.js and dropOrtWasm).
+            urlPattern: ({ url }) =>
+              /\/assets\/transformers\.web[-.][^/]*$/.test(url.pathname) ||
+              (url.hostname == "cdn.jsdelivr.net" && url.pathname.startsWith("/npm/onnxruntime-web@")),
             handler: "CacheFirst",
             options: {
               cacheName: "rapidewms-ai-runtime",
