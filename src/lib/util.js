@@ -124,8 +124,13 @@ export function pickPhoto() {
     i.type = "file";
     i.accept = "image/*";
     i.capture = "environment";
-    i.onchange = () => res(i.files[0] || null);
-    i.addEventListener("cancel", () => res(null));
+    // In the page (inside the open dialog, which makes everything else inert):
+    // older iPhone Safari does not open a picker that is not in the document.
+    i.hidden = true;
+    (document.querySelector("dialog[open]") || document.body).append(i);
+    const done = (f) => (i.remove(), res(f));
+    i.onchange = () => done(i.files[0] || null);
+    i.addEventListener("cancel", () => done(null));
     i.click();
   });
 }

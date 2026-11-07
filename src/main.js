@@ -265,9 +265,11 @@ const A = {
   // ---- product photo: barcode + on-device model ----
   async identify(el) {
     const fm = el.form;
-    if (!(await isCached()) && !confirm(t("ai.ask", { mb: MODEL_MB }))) return;
+    // The camera must open first, straight from the tap: iPhone Safari ignores
+    // a file picker opened after anything is awaited, and nothing happens.
     const photo = await pickPhoto();
     if (!photo) return;
+    if (!(await isCached()) && !confirm(t("ai.ask", { mb: MODEL_MB }))) return;
     let label = el.textContent;
     try {
       // The same photo often shows the barcode: fill it in if the form has none.
