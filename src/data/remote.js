@@ -5,6 +5,9 @@ import { createClient } from "@supabase/supabase-js";
 import { state, emit, canWrite } from "./state.js";
 import { err } from "../i18n/index.js";
 import { pageAll } from "./page.js";
+import * as apply from "./apply.js";
+import * as Q from "./queue.js";
+import * as C from "./cache.js";
 
 const url = import.meta.env.VITE_SUPABASE_URL,
   key = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -32,14 +35,53 @@ function friendly(e) {
   if (/already voided/i.test(m)) return err("err.saleVoided");
   if (/only the owner/i.test(m)) return err("err.noPerm");
   if (/lot not found/i.test(m)) return err("err.lotNotFound");
-  if (/failed to fetch|network/i.test(m)) return err("err.offline");
+  // Chrome, Safari and Firefox word a lost connection differently.
+  if (/failed to fetch|load failed|network/i.test(m)) return err("err.offline");
+  if (/unknown till/i.test(m)) return err("err.till");
   return new Error(m);
 }
+const fail = (code, params) => {
+  throw err(code, params);
+};
 const must = async (p) => {
   const { data, error } = await p;
   if (error) throw friendly(error);
   return data;
 };
+
+// ---------- session & shop ----------
+
+export async function myShops() {
+  return must(sb.from("members").select("role, shops(id, name, plan, plan_until)").eq("user_id", state.user.id));
+}
+
+export const createShop = (name) => must(sb.rpc("create_shop", { p_name: name }));
+
+export async function openShop(m) {
+  state.shop = m.shops;
+  state.role = m.role;
+  localStorage.lastShop = state.shop.id;
+  server = null;
+  await reload();
+  await ensureTill();
+  watch();
+  if (state.pending) sync().catch(() => {});
+}
+
+// Realtime: a change by another device in this shop brings a fresh copy.
+let channel = null,
+  reloadTimer = null;
+function watch() {
+  if (channel) sb.removeChannel(channel);
+  const filter = `shop_id=eq.${state.shop.id}`;
+  channel = sb.channel("shop-" + state.shop.id);
+  for (const table of ["items", "orders", "movements", "settings", "lots", "sales", "sale_lines"])
+    channel.on("postgres_changes", { event: "*", schema: "public", table, filter }, () => {
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => navigator.onLine && reload().catch(() => {}), 300);
+    });
+  channel.subscribe();
+}
 
 // Read a whole table, not just the first page the server feels like giving us.
 const all = (make, cap) => pageAll(make, cap, friendly);
@@ -70,7 +112,7 @@ export async function reload() {
     all(() => sel("sales").gte("created_at", since).order("created_at", { ascending: false }).order("id"), CAP.sales),
     all(() => sel("sale_lines").gte("created_at", since).order("created_at", { ascending: false }).order("id"), CAP.saleLines),
   ]);
-  Object.assign(state, {
+  server = {
     items: items.rows,
     orders: orders.rows,
     movements: movements.rows,
@@ -78,10 +120,28 @@ export async function reload() {
     lots: lots.rows,
     sales: sales.rows,
     saleLines: saleLines.rows,
+    settings: settings || state.settings,
     truncated: [items, orders, movements, sales, saleLines].some((r) => r.rows.length < r.total),
-  });
-  if (settings) state.settings = settings;
-  emit();
+  };
+  sentSince = [];
+  state.savedAt = new Date().toISOString();
+  // Kept on the device, so the shop opens with no internet.
+  await C.put("snap", id, { ...server, role: state.role, savedAt: state.savedAt }).catch(() => {});
+  localStorage["rapidewms.lastShop." + state.user.id] = id;
+  await rebuild();
+}
+
+/** Open the last shop this user had, from the copy on this device. */
+export async function openCached() {
+  const id = state.user && localStorage["rapidewms.lastShop." + state.user.id],
+    snap = id && (await C.get("snap", id).catch(() => null));
+  if (!snap) return false;
+  server = snap;
+  sentSince = [];
+  Object.assign(state, { shop: snap.shop, role: snap.role, savedAt: snap.savedAt });
+  await rebuild();
+  watch();
+  return true;
 }
 
 const write = async (p) => {
@@ -120,30 +180,219 @@ export async function saveItem(id, f) {
 
 export const deleteItem = (id) => write(sb.from("items").delete().eq("id", id));
 
+// ---------- work that also runs offline ----------
+//
+// Sales, voids, stock changes and write-offs go through the queue (queue.js):
+// stored on this device first, then sent. Offline they stay queued and show
+// at once, worked out by apply.js on top of the last copy from the server.
+
 export const adjust = (id, delta, note = "manual", expiry = null) =>
-  write(sb.rpc("adjust_stock", { p_item: id, p_delta: delta, p_note: note, p_expiry: expiry }));
+  queued("adjust", { item_id: id, delta, note, expiry: expiry || null });
 
-export const writeOffLot = (id, note = "expired") => write(sb.rpc("write_off_lot", { p_lot: id, p_note: note }));
-
-// ---------- the till ----------
-
-// One call, one transaction: the database prices each line and moves the stock.
-export async function createSale({ client_id, lines, discount = 0, method = "cash", paid = 0 }) {
-  const id = await must(
-    sb.rpc("create_sale", {
-      p_shop: state.shop.id,
-      p_client_id: client_id,
-      p_lines: lines.map((l) => ({ item_id: l.item_id, qty: l.qty })),
-      p_discount: discount,
-      p_method: method,
-      p_paid: paid,
-    }),
-  );
-  await reload();
-  return state.sales.find((x) => x.id == id) || (await must(sb.from("sales").select("*").eq("id", id).single()));
+// Keyed by product and date, not lot id: a lot received offline has no
+// server id yet.
+export async function writeOffLot(id, note = "expired") {
+  const lot = state.lots.find((l) => l.id == id) || fail("err.lotNotFound");
+  await queued("writeoff", { item_id: lot.item_id, expiry: lot.expiry, qty: +lot.qty, note });
 }
 
-export const voidSale = (id) => write(sb.rpc("void_sale", { p_sale: id }));
+// lines: [{ item_id, qty }]. The till's price goes along: the server uses it
+// only for a sale that happened offline, since that is what the customer paid.
+export async function createSale({ client_id, lines, discount = 0, method = "cash", paid = 0 }) {
+  const known = state.sales.find((x) => x.client_id == client_id && !x.pending);
+  if (known) return known;
+  const till = myTill(),
+    args = {
+      client_id,
+      lines: lines.map((l) => {
+        const it = state.items.find((i) => i.id == l.item_id);
+        return { item_id: l.item_id, qty: l.qty, price: it ? apply.linePrice(it, l.qty).price : null };
+      }),
+      discount,
+      method,
+      paid,
+      till: till?.code ?? null,
+      till_no: till ? nextTillNo(till) : null,
+    };
+  await queued("sale", args, client_id);
+  return state.sales.find((x) => x.client_id == client_id);
+}
+
+export async function voidSale(id) {
+  const s = state.sales.find((x) => x.id == id) || fail("err.saleNotFound");
+  if (s.status == "void") fail("err.saleVoided");
+  if (state.role != "owner") fail("err.noPerm");
+  await queued("void", { sale_client_id: s.client_id });
+}
+
+// The server call for one queued record.
+const SEND = {
+  sale: (r, a) =>
+    rpc("create_sale", {
+      p_shop: r.shop,
+      p_client_id: a.client_id,
+      p_lines: a.lines,
+      p_discount: a.discount,
+      p_method: a.method,
+      p_paid: a.paid,
+      p_at: r.at,
+      p_till: a.till,
+      p_till_no: a.till_no,
+      p_offline: r.offline,
+    }),
+  void: (r, a) => rpc("void_sale_by_client", { p_shop: r.shop, p_sale_client_id: a.sale_client_id, p_at: r.at }),
+  adjust: (r, a) =>
+    rpc("adjust_stock", {
+      p_item: a.item_id,
+      p_delta: a.delta,
+      p_note: a.note,
+      p_expiry: a.expiry,
+      p_client_id: r.id,
+      p_at: r.at,
+      p_offline: r.offline,
+    }),
+  writeoff: (r, a) =>
+    rpc("write_off_expiry", {
+      p_item: a.item_id,
+      p_expiry: a.expiry,
+      p_qty: a.qty,
+      p_note: a.note,
+      p_client_id: r.id,
+      p_at: r.at,
+    }),
+};
+const rpc = (fn, args) => must(sb.rpc(fn, args));
+
+// "Try again later" rather than "the server said no": no connection, or a
+// login that expired while offline and is refreshed before the next try.
+const isNet = (e) =>
+  !navigator.onLine || e?.code == "err.offline" || /jwt|token|401|auth session/i.test(e?.message || "");
+
+// What this device did, shown on top of the server's copy: what is still
+// queued, plus what was sent since the copy was taken.
+const ctxFor = (r) => ({ shopId: r.shop, userId: state.user?.id ?? null, at: r.at, short: true });
+function applyRecord(db, r) {
+  const a = r.args,
+    ctx = ctxFor(r);
+  try {
+    if (r.op == "sale") {
+      const s = apply.sale(db, ctx, { ...a, id: "q-" + a.client_id });
+      if (s.id == "q-" + a.client_id) s.pending = true; // not on the server yet
+    }
+    if (r.op == "void") {
+      const s = db.sales.find((x) => x.client_id == a.sale_client_id);
+      if (s) apply.voidSale(db, ctx, s);
+    }
+    if (r.op == "adjust") apply.stockMove(db, ctx, a.item_id, a.delta, a.note, a.expiry);
+    if (r.op == "writeoff") apply.writeOff(db, ctx, a.item_id, a.expiry, a.qty, a.note);
+  } catch {
+    // The product is gone from this copy, say. The server decides when it's sent.
+  }
+}
+
+let server = null, // the last copy from the server
+  sentSince = []; // records the server has that the copy doesn't yet
+
+async function rebuild() {
+  if (!server || server.shop.id != state.shop?.id) return emit();
+  const s = structuredClone(server);
+  Object.assign(state, {
+    items: s.items,
+    orders: s.orders,
+    movements: s.movements,
+    lots: s.lots,
+    sales: s.sales,
+    saleLines: s.saleLines,
+    shop: s.shop,
+    truncated: s.truncated,
+  });
+  if (s.settings) state.settings = s.settings;
+  const queue = await Q.pending(state.shop.id),
+    db = {
+      items: state.items,
+      lots: state.lots,
+      movements: state.movements,
+      sales: state.sales,
+      sale_lines: state.saleLines,
+      orders: state.orders,
+      settings: { [state.shop.id]: state.settings },
+    };
+  for (const r of [...sentSince, ...queue]) applyRecord(db, r);
+  const newest = (a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0);
+  state.sales.sort(newest);
+  state.movements.sort(newest);
+  state.lots.sort((a, b) => (a.expiry < b.expiry ? -1 : 1));
+  state.pending = queue.length;
+  state.failed = await Q.failed(state.shop.id);
+  emit();
+}
+
+let timer = null;
+/** Send what is queued. Called when the network returns, every 30 s while
+ * something waits, and by the "waiting to send" button. */
+export async function sync(freshId = null) {
+  if (!state.shop) return { sent: [], stopped: true };
+  if (!navigator.onLine) {
+    await rebuild();
+    return { sent: [], stopped: true };
+  }
+  await sb.auth.getSession().catch(() => {});
+  const out = await Q.flush(state.shop.id, (r) => SEND[r.op](r, r.args), isNet, freshId);
+  sentSince.push(...out.sent);
+  if (!out.stopped && navigator.onLine) await reload().catch(() => rebuild());
+  else await rebuild();
+  clearTimeout(timer);
+  if (state.pending) timer = setTimeout(() => sync().catch(() => {}), 30e3);
+  return out;
+}
+
+async function queued(op, args, id) {
+  if (!canWrite()) fail("err.readonly");
+  const rec = Q.record(state.shop.id, op, args, id);
+  rec.offline = !navigator.onLine;
+  await Q.add(rec);
+  if (rec.offline) return sync(); // shows it now, sends it when the network returns
+  const out = await sync(rec.id);
+  if (out.freshError) throw out.freshError;
+}
+
+/** Put work the server refused back in the queue, or drop it. */
+export async function retryFailed(id) {
+  await Q.retry(id);
+  await sync();
+}
+export async function discardFailed(id) {
+  await Q.discard(id);
+  await rebuild();
+}
+
+// ---------- tills: receipt numbers that work offline ----------
+//
+// Each device registers once as a till of the shop (A, B, C...) and numbers
+// its own receipts, so two tills offline at the same time never hand out the
+// same number. Kept per shop in this browser.
+const tillKey = () => "rapidewms.till." + state.shop.id;
+export function myTill() {
+  try {
+    return JSON.parse(localStorage[tillKey()]);
+  } catch {
+    return null;
+  }
+}
+function nextTillNo(till) {
+  const no = till.next;
+  localStorage[tillKey()] = JSON.stringify({ ...till, next: no + 1 });
+  return no;
+}
+async function ensureTill() {
+  if (myTill() || !navigator.onLine || !canWrite()) return;
+  try {
+    const code = await rpc("register_till", { p_shop: state.shop.id, p_name: "" });
+    if (!myTill()) localStorage[tillKey()] = JSON.stringify({ code, next: 1 });
+  } catch {
+    // Tried again next time the shop opens; until then receipts use the server's number.
+  }
+}
 
 // Bulk import: new SKUs only, existing ones are skipped. Returns count added.
 export async function importItems(list) {

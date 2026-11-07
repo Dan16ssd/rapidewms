@@ -5,7 +5,7 @@
 // so the app behaves the same before Supabase is set up.
 import { state, emit, canWrite } from "./state.js";
 import { err } from "../i18n/index.js";
-import { today } from "../lib/expiry.js";
+import * as apply from "./apply.js";
 
 const KEY = "rapidewms.local";
 const uid = () => crypto.randomUUID();
@@ -35,6 +35,12 @@ const mine = (list) => list.filter((x) => x.shop_id == shopId());
 
 export const configured = false;
 export const signOut = async () => {};
+// The demo keeps everything in this browser already: nothing to queue or send.
+export const sync = async () => ({ sent: [], stopped: false });
+export const openCached = async () => false;
+export const myTill = () => null;
+export const retryFailed = async () => {};
+export const discardFailed = async () => {};
 
 // ---------- session & shop ----------
 
@@ -90,79 +96,12 @@ const commit = async () => {
 
 // ---------- stock (mirrors adjust_stock / set_stock / complete_order) ----------
 
-// Mirrors stock_move() in 002_pos.sql: stock leaves from in-date lots soonest
-// first, then undated stock, then expired lots; each part is its own movement.
+// The rules themselves live in apply.js, shared with the offline copy of a
+// Supabase shop, so the demo and a real shop behave the same.
+const ctx = () => ({ shopId: shopId(), userId: state.user?.id ?? null });
 function moveRaw(itemId, delta, note, expiry = null, saleId = null) {
   writable();
-  const it = db.items.find((i) => i.id == itemId && i.shop_id == shopId()) || fail("err.itemNotFound");
-  if (!delta) fail("err.zeroQty");
-  const q = +it.qty + delta;
-  if (q < 0) fail("err.stock", { sku: it.sku, qty: +it.qty });
-  const log = (type, qty, exp) =>
-    db.movements.push({
-      id: uid(),
-      shop_id: it.shop_id,
-      item_id: it.id,
-      sku: it.sku,
-      type,
-      qty,
-      note: note || "",
-      expiry: exp || null,
-      sale_id: saleId,
-      created_at: nowIso(),
-    });
-  if (delta > 0) {
-    if (expiry) {
-      const lot = db.lots.find((l) => l.item_id == it.id && l.expiry == expiry);
-      if (lot) lot.qty += delta;
-      else db.lots.push({ id: uid(), shop_id: it.shop_id, item_id: it.id, expiry, qty: delta, created_at: nowIso() });
-    }
-    log("in", delta, expiry);
-  } else {
-    let left = -delta;
-    const lots = db.lots.filter((l) => l.item_id == it.id).sort((a, b) => (a.expiry < b.expiry ? -1 : 1)),
-      free = Math.max(+it.qty - lots.reduce((a, l) => a + l.qty, 0), 0),
-      now = today();
-    const take = (lot) => {
-      const n = Math.min(lot.qty, left);
-      if (!n) return;
-      lot.qty -= n;
-      left -= n;
-      log("out", n, lot.expiry);
-    };
-    lots.filter((l) => l.expiry >= now).forEach(take);
-    if (left && free) {
-      const n = Math.min(free, left);
-      left -= n;
-      log("out", n, null);
-    }
-    lots.filter((l) => l.expiry < now).forEach(take);
-    if (left) log("out", left, null);
-    db.lots = db.lots.filter((l) => l.qty > 0);
-  }
-  it.qty = q;
-  it.updated_at = nowIso();
-  autoReorder(it);
-  return q;
-}
-
-function autoReorder(it) {
-  if (
-    db.settings[it.shop_id]?.auto_reorder &&
-    +it.qty < +it.min_qty &&
-    !db.orders.some((o) => o.item_id == it.id && o.type == "in" && o.status == "pending")
-  )
-    db.orders.push({
-      id: uid(),
-      shop_id: it.shop_id,
-      item_id: it.id,
-      type: "in",
-      qty: it.min_qty * 2 - it.qty,
-      party: "Auto-reorder",
-      status: "pending",
-      auto: true,
-      created_at: nowIso(),
-    });
+  return apply.stockMove(db, ctx(), itemId, delta, note, expiry, saleId);
 }
 
 const adjustRaw = (itemId, delta, note, expiry) => moveRaw(itemId, delta, note, expiry);
@@ -180,24 +119,8 @@ export async function adjust(id, delta, note = "manual", expiry = null) {
 // Mirrors write_off_lot(): the whole lot leaves stock, logged as expired.
 export async function writeOffLot(lotId, note = "expired") {
   writable();
-  const lot = db.lots.find((l) => l.id == lotId && l.shop_id == shopId()) || fail("err.lotNotFound"),
-    it = db.items.find((i) => i.id == lot.item_id);
-  it.qty -= lot.qty;
-  it.updated_at = nowIso();
-  db.lots = db.lots.filter((l) => l.id != lotId);
-  db.movements.push({
-    id: uid(),
-    shop_id: it.shop_id,
-    item_id: it.id,
-    sku: it.sku,
-    type: "out",
-    qty: lot.qty,
-    note,
-    expiry: lot.expiry,
-    sale_id: null,
-    created_at: nowIso(),
-  });
-  autoReorder(it);
+  const lot = db.lots.find((l) => l.id == lotId && l.shop_id == shopId()) || fail("err.lotNotFound");
+  apply.writeOff(db, ctx(), lot.item_id, lot.expiry, +lot.qty, note);
   await commit();
 }
 
@@ -312,59 +235,14 @@ export async function deleteOrder(id) {
 // lines: [{ item_id, qty }]. Prices come from the product, never the till.
 export async function createSale({ client_id, lines, discount = 0, method = "cash", paid = 0 }) {
   writable();
-  const dup = db.sales.find((x) => x.shop_id == shopId() && x.client_id == client_id);
-  if (dup) return dup;
-  if (!["cash", "transfer"].includes(method)) fail("err.payMethod");
-  if (!lines?.length) fail("err.emptySale");
   // A failing line must leave stock and receipt numbers untouched: snapshot and roll back.
   const before = JSON.stringify(db);
   try {
     const shop = db.shops.find((x) => x.id == shopId()),
-      sale = {
-        id: uid(),
-        shop_id: shopId(),
-        client_id,
-        receipt_no: (shop.receipt_seq || 0) + 1,
-        method,
-        status: "paid",
-        cashier: state.user?.id ?? null,
-        created_at: nowIso(),
-      };
-    shop.receipt_seq = sale.receipt_no;
-    const merged = new Map();
-    for (const l of lines) {
-      if (!(+l.qty > 0)) fail("err.qtyPositive");
-      merged.set(l.item_id, (merged.get(l.item_id) || 0) + +l.qty);
-    }
-    let sub = 0;
-    for (const [item_id, qty] of [...merged].sort(([a], [b]) => (a < b ? -1 : 1))) {
-      const it = db.items.find((i) => i.id == item_id && i.shop_id == shopId()) || fail("err.itemNotFound"),
-        ws = +it.price_wholesale > 0 && +it.wholesale_min_qty > 0 && qty >= +it.wholesale_min_qty,
-        price = ws ? +it.price_wholesale : +it.price;
-      if (!(price > 0)) fail("err.noPrice", { sku: it.sku });
-      moveRaw(item_id, -qty, "sale", null, sale.id);
-      db.sale_lines.push({
-        id: uid(),
-        shop_id: shopId(),
-        sale_id: sale.id,
-        item_id,
-        sku: it.sku,
-        name: it.name,
-        qty,
-        unit_price: price,
-        wholesale: ws,
-        line_total: qty * price,
-        created_at: sale.created_at,
-      });
-      sub += qty * price;
-    }
-    discount = +discount || 0;
-    if (discount < 0 || discount > sub) fail("err.discount");
-    const total = sub - discount;
-    paid = method == "cash" ? +paid || 0 : total;
-    if (paid < total) fail("err.cashShort");
-    Object.assign(sale, { subtotal: sub, discount, total, paid, change_due: paid - total });
-    db.sales.push(sale);
+      known = db.sales.some((x) => x.shop_id == shopId() && x.client_id == client_id),
+      lines0 = lines.map(({ item_id, qty }) => ({ item_id, qty })),
+      sale = apply.sale(db, ctx(), { client_id, lines: lines0, discount, method, paid, receipt_no: (shop.receipt_seq || 0) + 1 });
+    if (!known) shop.receipt_seq = sale.receipt_no;
     await commit();
     return sale;
   } catch (e) {
@@ -378,18 +256,7 @@ export async function voidSale(id) {
   ownerOnly();
   const sale = db.sales.find((x) => x.id == id && x.shop_id == shopId()) || fail("err.saleNotFound");
   if (sale.status == "void") fail("err.saleVoided");
-  const back = new Map();
-  for (const m of db.movements)
-    if (m.sale_id == id && m.type == "out" && m.item_id) {
-      const k = m.item_id + "|" + (m.expiry || "");
-      back.set(k, (back.get(k) || 0) + m.qty);
-    }
-  for (const [k, qty] of back) {
-    const [item, exp] = k.split("|");
-    moveRaw(item, qty, "void", exp || null, id);
-  }
-  sale.status = "void";
-  sale.voided_at = nowIso();
+  apply.voidSale(db, ctx(), sale);
   await commit();
 }
 

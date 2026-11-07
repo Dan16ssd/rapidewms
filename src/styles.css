@@ -167,6 +167,23 @@ nav h6 {
   color: #a78bfa;
   font-weight: 500;
 }
+/* Offline / waiting to send: always in sight, also on a phone. */
+.btn.sync {
+  border-color: #fbbf24;
+  color: #fde68a;
+}
+.btn.sync.off {
+  border-color: #fb923c;
+  background: #2a1408;
+}
+.btn.sync.bad {
+  border-color: #f87171;
+  color: #fecaca;
+}
+.tag.wait {
+  border-color: #fbbf24;
+  color: #fde68a;
+}
 main > * + * {
   margin-top: 22px;
 }

@@ -316,5 +316,116 @@ await ok("every type is consumable or durable", () =>
   eq(Object.values(TYPES).every((k) => k == "consumable" || k == "durable"), true, "kinds"),
 );
 
+console.log("\nOffline queue");
+const Q = await import("../src/data/queue.js");
+const net = Object.assign(new Error("Failed to fetch"), { code: "err.offline" });
+const isNet = (e) => e.code == "err.offline";
+const rec = (op, at, id) => ({ ...Q.record("shopQ", op, {}, id), at });
+await ok("sends in the order things happened, not the order they were queued", async () => {
+  for (const r of [
+    rec("sale", "2026-11-07T10:05:00Z", "q-2"),
+    rec("sale", "2026-11-07T10:01:00Z", "q-1"),
+    rec("void", "2026-11-07T10:09:00Z", "q-3"),
+  ])
+    await Q.add(r);
+  const seen = [];
+  const out = await Q.flush("shopQ", async (r) => seen.push(r.id), isNet);
+  eq(seen.join(","), "q-1,q-2,q-3", "order");
+  eq(out.sent.length, 3, "sent");
+  eq((await Q.pending("shopQ")).length, 0, "queue empty");
+});
+await ok("no connection: stops, keeps the rest, marks them offline", async () => {
+  await Q.add(rec("sale", "2026-11-07T11:00:00Z", "n-1"));
+  await Q.add(rec("adjust", "2026-11-07T11:01:00Z", "n-2"));
+  const out = await Q.flush("shopQ", async (r) => {
+    if (r.id == "n-2") throw net;
+  }, isNet);
+  eq(out.stopped, true, "stopped");
+  eq((await Q.pending("shopQ")).map((r) => r.id + ":" + r.offline).join(","), "n-2:true", "left");
+  await Q.flush("shopQ", async () => {}, isNet);
+});
+await ok("refused by the server: goes to the couldn't-send list, the rest still go", async () => {
+  await Q.add(rec("writeoff", "2026-11-07T12:00:00Z", "r-1"));
+  await Q.add(rec("sale", "2026-11-07T12:01:00Z", "r-2"));
+  const seen = [];
+  await Q.flush("shopQ", async (r) => {
+    if (r.id == "r-1") throw new Error("lot not found");
+    seen.push(r.id);
+  }, isNet);
+  eq(seen.join(","), "r-2", "sent");
+  eq((await Q.failed("shopQ")).map((r) => r.id + ":" + r.error.message).join(","), "r-1:lot not found", "failed");
+  await Q.retry("r-1");
+  eq((await Q.pending("shopQ")).length, 1, "back in the queue");
+  await Q.flush("shopQ", async () => {}, isNet);
+  eq((await Q.failed("shopQ")).length, 0, "list empty");
+});
+await ok("refused while the person waits: the error goes back to them", async () => {
+  await Q.add(rec("sale", "2026-11-07T13:00:00Z", "f-1"));
+  const out = await Q.flush("shopQ", async () => {
+    throw new Error("not enough stock");
+  }, isNet, "f-1");
+  eq(out.freshError?.message, "not enough stock", "error");
+  eq((await Q.failed("shopQ")).length + (await Q.pending("shopQ")).length, 0, "not kept");
+});
+
+console.log("\nOffline copy (apply.js, the same rules as the database)");
+const AP = await import("../src/data/apply.js");
+const shopDb = () => ({
+  items: [
+    { id: "i1", shop_id: "s", sku: "MILK", name: "Milk", qty: 20, min_qty: 0, price: 10000, price_wholesale: 9000, wholesale_min_qty: 12 },
+  ],
+  lots: [
+    { id: "l1", shop_id: "s", item_id: "i1", expiry: "2000-01-01", qty: 6 },
+    { id: "l2", shop_id: "s", item_id: "i1", expiry: "2099-01-01", qty: 4 },
+    { id: "l3", shop_id: "s", item_id: "i1", expiry: "2099-03-01", qty: 8 },
+  ],
+  movements: [],
+  sales: [],
+  sale_lines: [],
+  orders: [],
+  settings: {},
+});
+const lotList = (d) => d.lots.map((l) => `${l.expiry}:${l.qty}`).join(" ");
+const C0 = { shopId: "s", at: "2026-11-07T10:00:00Z" };
+await ok("takes in-date lots soonest first, then undated, then expired (as test-db)", async () => {
+  const d = shopDb();
+  AP.stockMove(d, C0, "i1", -5, "x");
+  eq(lotList(d), "2000-01-01:6 2099-03-01:7", "after 5");
+  AP.stockMove(d, C0, "i1", -8, "x");
+  eq(lotList(d), "2000-01-01:6", "after 13");
+  AP.stockMove(d, C0, "i1", -2, "x");
+  eq(lotList(d), "2000-01-01:5", "after 15");
+});
+await ok("online it refuses to go below zero; offline it goes below and drops every lot", async () => {
+  const d = shopDb();
+  let threw = false;
+  try {
+    AP.stockMove(d, C0, "i1", -21, "x");
+  } catch (e) {
+    threw = e.code == "err.stock";
+  }
+  eq(threw, true, "refused");
+  AP.stockMove(d, { ...C0, short: true }, "i1", -21, "x");
+  eq(`${d.items[0].qty} [${lotList(d)}]`, "-1 []", "below zero");
+  AP.stockMove(d, C0, "i1", 5, "in", "2099-05-01");
+  eq(`${d.items[0].qty} [${lotList(d)}]`, "4 [2099-05-01:4]", "hole filled first");
+});
+await ok("an offline sale keeps its price and time; a resend is the same sale", async () => {
+  const d = shopDb(),
+    args = { id: "q-c1", client_id: "c1", lines: [{ item_id: "i1", qty: 2, price: 7000 }], paid: 1e9 };
+  const s = AP.sale(d, { ...C0, short: true }, args);
+  eq(`${s.total} ${s.created_at} ${d.items[0].qty}`, "14000 2026-11-07T10:00:00Z 18", "sale");
+  eq(AP.sale(d, { ...C0, short: true }, args) === s, true, "same sale");
+  eq(d.items[0].qty, 18, "stock once");
+  AP.voidSale(d, C0, s);
+  AP.voidSale(d, C0, s);
+  eq(`${d.items[0].qty} ${s.status}`, "20 void", "voided once");
+});
+await ok("receipt numbers: the till's own when it has one", async () => {
+  eq(AP.saleNo({ till: "B", till_no: 42 }), "B-0042", "till");
+  eq(AP.saleNo({ receipt_no: 7 }), "7", "server");
+  eq(AP.saleNo({}), "…", "not yet");
+});
+
 console.log(fails ? `\n${fails} FAILED` : "\nAll unit checks passed");
 process.exit(fails ? 1 : 0);

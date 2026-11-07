@@ -6,7 +6,7 @@ import "@fontsource/noto-sans-lao/lao-500.css";
 import "@fontsource/noto-sans-lao/lao-600.css";
 import "@fontsource/noto-sans-lao/lao-700.css";
 import { $, E, toast, form, pickPhoto, checkExpiry, dateText } from "./lib/util.js";
-import { t, tn, errText, setLang, other, applyStatic, fDateTime } from "./i18n/index.js";
+import { t, tn, errText, setLang, other, applyStatic, fDateTime, fTime } from "./i18n/index.js";
 import { csvToItems } from "./lib/csv.js";
 import { exportSet, exportZip } from "./lib/export.js";
 import * as store from "./data/store.js";
@@ -74,6 +74,19 @@ function render(force) {
       ? t("plan.expiredShort")
       : tn("plan.left", days, { plan: t(state.shop.plan == "paid" ? "plan.paid" : "plan.trial") })
   }</p>`;
+
+  // Offline, or work not yet on the server: say so, and how old the data is.
+  const sy = $("#sync"),
+    failed = state.failed.length;
+  sy.hidden = state.online && !state.pending && !failed;
+  sy.className = "btn sync" + (state.online ? "" : " off") + (failed ? " bad" : "");
+  sy.textContent = [
+    state.online ? "" : t("sync.offline", { time: !state.savedAt ? "–" : new Date(state.savedAt).toDateString() == new Date().toDateString() ? fTime(state.savedAt, false) : fDateTime(state.savedAt) }),
+    state.pending ? tn("sync.waiting", state.pending) : "",
+    failed ? tn("sync.failed", failed) : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   // The till draws its own changes, so a sale in progress is never wiped.
   if (view == "pos" && $("#pos") && !force) return till.refresh();
@@ -259,8 +272,9 @@ const A = {
     const lot = state.lots.find((l) => l.id == el.dataset.id),
       it = lot && state.items.find((i) => i.id == lot.item_id);
     if (!it || !confirm(t("ask.writeOff", { n: +lot.qty, name: it.name, d: dateText(lot.expiry) }))) return;
+    const n = +lot.qty; // read first: the lot is emptied by the write-off
     await store.writeOffLot(lot.id);
-    toast(t("msg.writtenOff", { n: +lot.qty, sku: it.sku }));
+    toast(t("msg.writtenOff", { n, sku: it.sku }));
   },
   // ---- product photo: barcode + on-device model ----
   async identify(el) {
@@ -303,6 +317,19 @@ const A = {
       el.textContent = label;
     }
   },
+  // ---- offline work ----
+  async syncNow() {
+    if (!state.online) return toast(t("sync.stillOffline"), true);
+    const out = await store.sync();
+    toast(out.stopped ? t("sync.stillOffline") : tn("sync.sent", out.sent.length), out.stopped);
+  },
+  async retryFailed(el) {
+    await store.retryFailed(el.dataset.id);
+  },
+  async discardFailed(el) {
+    if (!confirm(t("sync.askDiscard"))) return;
+    await store.discardFailed(el.dataset.id);
+  },
   // ---- the till ----
   posAdd: (el) => till.add(el.dataset.id),
   posInc: (el) => till.inc(el.dataset.id, 1),
@@ -340,7 +367,9 @@ const A = {
     await store.eraseAll();
     toast(t("msg.erased"));
   },
-  signOut: () => store.signOut(),
+  // Queued work stays on this device and is sent after the next sign-in,
+  // but nobody should leave a till believing it is already on the server.
+  signOut: () => (!state.pending || confirm(tn("sync.askSignOut", state.pending))) && store.signOut(),
   lang: () => switchLang(other()),
   install: () => installApp(),
   top: () => scrollTo({ top: 0, behavior: "smooth" }),
@@ -468,8 +497,25 @@ document.addEventListener("keydown", (ev) => {
 
 // ---------- start ----------
 
+function storedSession() {
+  try {
+    const k = Object.keys(localStorage).find((x) => /^sb-.+-auth-token$/.test(x)),
+      s = k && JSON.parse(localStorage[k]);
+    return s?.user ? s : null;
+  } catch {
+    return null;
+  }
+}
+
 async function enter() {
-  const shops = await store.myShops();
+  let shops;
+  try {
+    shops = await store.myShops();
+  } catch (e) {
+    // No connection: open the copy of the shop kept on this device.
+    if (await store.openCached()) return;
+    throw e;
+  }
   if (!shops.length) return showCreateShop(enter);
   const m = shops.find((x) => x.shops.id == localStorage.lastShop) || shops[0];
   await store.openShop(m);
@@ -512,6 +558,10 @@ if (!store.configured) {
     }
     // Supabase advises not awaiting its calls inside this callback.
     setTimeout(async () => {
+      // Offline with a login that needs renewing: supabase-js can't renew it
+      // without the network and reports no session, but it is still stored.
+      // Work from it; it is renewed when the network returns.
+      if (!session && !navigator.onLine && ev != "SIGNED_OUT") session = storedSession();
       if (!session) {
         Object.assign(state, { user: null, shop: null, items: [], orders: [], movements: [] });
         await scanner.cam(false);

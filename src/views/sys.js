@@ -1,6 +1,6 @@
 import { E } from "../lib/util.js";
 import { t, tn, lang, LANGS, fDate } from "../i18n/index.js";
-import { isOwner, configured } from "../data/store.js";
+import { isOwner, configured, myTill } from "../data/store.js";
 
 export default function sys(s) {
   const until = new Date(s.shop.plan_until),
@@ -9,7 +9,11 @@ export default function sys(s) {
   return `<div class="card"><h3>${t("sys.shop")}</h3><p class="mt"><b>${E(s.shop.name)}</b></p><p class="mut">${t(
     "sys.signedIn",
     { email: E(s.user.email), role: t(s.role == "owner" ? "role.owner" : "role.staff") },
-  )}</p><p class="plan mt ${days <= 0 ? "expired" : ""}">${
+  )}</p>${
+    configured
+      ? `<p class="mut">${myTill() ? t("sys.till", { code: E(myTill().code) }) : t("sys.noTill")}</p>`
+      : ""
+  }<p class="plan mt ${days <= 0 ? "expired" : ""}">${
     days > 0
       ? tn("sys.planLeft", days, { plan, date: fDate(until) })
       : t("sys.planExpired")

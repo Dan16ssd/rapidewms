@@ -12,6 +12,9 @@ export const state = {
   saleLines: [], // lines of those sales
   truncated: false, // true when the server held back older orders/movements
   online: navigator.onLine,
+  savedAt: null, // when this copy came from the server (shown while offline)
+  pending: 0, // work done on this device the server doesn't have yet
+  failed: [], // queued work the server refused, for the owner to decide
 };
 
 const listeners = new Set();

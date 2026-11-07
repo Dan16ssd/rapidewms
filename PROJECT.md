@@ -234,11 +234,11 @@ The full written plan is kept outside the repo; this table is the summary.
 - **A real Supabase project** (Singapore), with the schema applied and verified.
 - **Bundled Lao font.** Noto Sans Lao (Lao subset, ~9 KB a weight) ships with the app instead of coming from a CDN, so Lao renders the same on every device and still renders offline. Lao also gets its own leading and a larger floor for small text, because its vowel signs sit above the letter and its tone marks below.
 - **Installs as an app on Windows and Android.** One PWA build, no separate desktop project and no `.exe` to sign. The service worker precaches the shell, the fonts and the scanner (674 KB); the export libraries (~1.4 MB) are cached on first use instead, so installing over a phone connection stays small. Supabase responses are never cached, on purpose.
+- **Selling with no internet (`003_offline.sql`, `src/data/queue.js`, `cache.js`, `apply.js`).** Each device keeps a copy of its shop in IndexedDB and opens from it offline. Sales, voids, stock in/out and expiry write-offs are queued on the device, shown at once, and sent when the network returns, oldest first. The server files each at the device's time, so several tills' history lines up; a clock more than 5 minutes ahead is replaced by server time and flagged. Every queued piece carries a device id, so a resend changes nothing. Each device is a till (A, B, C…) with its own receipt numbers, so receipts printed offline never clash. An offline sale is never refused for stock (the goods are gone): stock may go below zero and the dashboard's Check list asks for a recount, along with sales at an old price and anything the server refused (Retry / Discard). Online sales are still refused below zero. Tested: 20 database checks, 8 unit checks, and an end-to-end run of the built app in headless Chrome against a Supabase stand-in (PGlite behind a small PostgREST imitation): online sale, offline reload, two offline sales while a second till sells online, an offline void, reconnect, and a server outage with Wi-Fi still up. **17/17 passed.** Not yet tried on two real phones.
 - **Backups that are checked, not assumed.** `npm run backup` dumps the live database to a file outside this repo; `npm run backup:verify` restores it into a throwaway database and fails if it is truncated, inconsistent or missing its users. A daily Windows task takes them, which also stops the free project pausing after a week idle.
 
 **Not done yet** (the POS plan covers these; see section 9's blocks):
 - The till itself: sell screen, payments, receipts, customers and credit, shifts.
-- **The offline write queue.** The app now opens and runs offline, but a change made with no connection is still refused rather than stored and replayed. This needs the `client_id` idempotency keys to be in the schema from the first sales migration, or a queued write can apply twice on reconnect.
 - Applying migrations with the Supabase CLI against a separate staging project, rather than pasting SQL into the dashboard. This has to exist before the POS tables touch a database with real shop data.
 - An **off-machine** copy of the backups. Today they only live on one laptop, so a stolen or dead machine loses them; the folder needs to be inside OneDrive, a USB stick or similar.
 - Error tracking (Sentry), so a bug in a shop reaches us without a phone call.
@@ -254,8 +254,8 @@ The full written plan is kept outside the repo; this table is the summary.
 
 ## 10. Next steps
 
-1. **Run `002_pos.sql` on the Supabase project**, then test the till with two devices at once.
+1. **Run `003_offline.sql` on the Supabase project** (002 is already applied), then test with two phones: airplane mode on both, sell, reconnect, and compare with the cash count.
 2. **Phone test in a real shop:** scan real products at odd angles, read real expiry labels, and time the product identify on a cheap Android. The numbers in section 5 are from a PC.
-3. **Still to build for the till:** customers and credit sales, shifts with cash count, refunds of part of a sale, Bluetooth thermal printing, and the offline write queue (sales already carry the `client_id` it needs).
+3. **Still to build for the till:** customers and credit sales, shifts with cash count, refunds of part of a sale, Bluetooth thermal printing.
 4. **Shared team testing:** create the Supabase project (section 3) so the team works on the same stock.
 5. **Start customer interviews** (week 1 of the sales plan) while the build continues, and confirm the 10% VAT rules with the Department of Taxation before claiming tax compliance.

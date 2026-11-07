@@ -1,6 +1,44 @@
 import { E, fmt, num } from "../lib/util.js";
 import { t, tn } from "../i18n/index.js";
 import { status } from "../lib/expiry.js";
+import { dt } from "../lib/util.js";
+import { saleNo } from "../data/apply.js";
+import { errText } from "../i18n/index.js";
+
+// What needs a person after work done offline: stock that went below zero,
+// sales the server flagged, and queued work it refused.
+function checks(s) {
+  const neg = s.items.filter((i) => +i.qty < 0),
+    flagged = s.sales.filter((x) => x.status != "void" && x.flags?.length),
+    failed = s.failed || [];
+  if (!neg.length && !flagged.length && !failed.length) return "";
+  const what = (r) =>
+    r.op == "sale"
+      ? t("sync.op.sale", { n: r.args.till ? `${r.args.till}-${String(r.args.till_no).padStart(4, "0")}` : "" })
+      : t("sync.op." + r.op, { sku: s.items.find((i) => i.id == r.args.item_id)?.sku ?? "" });
+  return `<div class="card ts"><h3>${t("chk.title")}<small>${t("chk.sub")}</small></h3><table class="rt">${[
+    ...neg.map(
+      (i) =>
+        `<tr><td><b>${E(i.sku)}</b> ${E(i.name)}</td><td class="bad">${num(i.qty)}</td><td>${t(
+          "chk.below",
+        )}</td><td class="act"><button class="g" data-act="editItem" data-id="${E(i.id)}">${t("chk.recount")}</button></td></tr>`,
+    ),
+    ...flagged.map(
+      (x) =>
+        `<tr><td><b>#${E(saleNo(x))}</b> ${dt(x.created_at)}</td><td>${fmt(x.total)}</td><td class="warn">${x.flags
+          .map((f) => t("chk.flag." + f))
+          .join(", ")}</td><td class="act"><button class="g" data-act="posReceipt" data-id="${E(x.client_id)}">🧾</button></td></tr>`,
+    ),
+    ...failed.map(
+      (r) =>
+        `<tr><td><b>${E(what(r))}</b> ${dt(r.at)}</td><td colspan="2" class="bad">${E(
+          errText(r.error?.code ? { code: r.error.code, params: r.error.params } : r.error?.message || ""),
+        )}</td><td class="act"><button class="g" data-act="retryFailed" data-id="${E(r.id)}">${t(
+          "sync.retry",
+        )}</button> <button class="g" data-act="discardFailed" data-id="${E(r.id)}">${t("sync.discard")}</button></td></tr>`,
+    ),
+  ].join("")}</table></div>`;
+}
 
 const P = ["#8b5cf6", "#22d3ee", "#f472b6", "#fbbf24", "#34d399", "#fb923c"];
 
@@ -46,6 +84,7 @@ export default function dash(s) {
         `<div class="card"><div class="sh">${t(k)}<i class="ic">${i}</i></div><b class="n ${cl}">${b}</b><small>${v ?? t(k + ".sub")}</small></div>`,
     )
     .join("")}</div>
+${checks(s)}
 <div class="charts"><div class="card"><h3>${t("dash.byCat")}<small>${t(
     "dash.unitsWord",
   )}</small></h3><svg viewBox="0 0 100 100" style="width:min(260px,70%);display:block;margin:20px auto">${seg}<circle r="27" cx="50" cy="50" fill="#0b0718"/></svg><div class="mut" style="text-align:center">${

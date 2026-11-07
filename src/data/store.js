@@ -27,11 +27,17 @@ export const {
   deleteOrder,
   setSetting,
   eraseAll,
+  sync,
+  openCached,
+  myTill,
+  retryFailed,
+  discardFailed,
 } = B;
 
+// Back online: send what was done offline, then fetch a fresh copy.
 addEventListener("online", () => {
   state.online = true;
-  if (state.shop) reload().catch(() => {});
+  if (state.shop) sync().catch(() => {});
 });
 addEventListener("offline", () => {
   state.online = false;

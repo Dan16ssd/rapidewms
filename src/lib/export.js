@@ -1,6 +1,7 @@
 // PDF / Excel / CSV / ZIP exports. Heavy libraries load only when used.
 import { toCsv } from "./csv.js";
 import { dt, download } from "./util.js";
+import { saleNo } from "../data/apply.js";
 
 // Headers and type words stay English on purpose: csvToItems() matches these
 // header names when a shop re-imports its own export, and jsPDF has no Lao font
@@ -56,7 +57,7 @@ export const sets = (s) => {
           const x = sale.get(l.sale_id);
           return [
             dt(x.created_at),
-            x.receipt_no,
+            saleNo(x),
             l.sku,
             l.name,
             +l.qty,

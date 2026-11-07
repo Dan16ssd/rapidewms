@@ -88,4 +88,5 @@ export function applyStatic(root = document) {
   root.querySelectorAll("[data-i18n-title]").forEach((el) => (el.title = t(el.dataset.i18nTitle)));
 }
 
-document.documentElement.lang = cur;
+// (No document when the unit tests import this in Node.)
+if (typeof document != "undefined") document.documentElement.lang = cur;

@@ -8,6 +8,7 @@ import * as store from "../data/store.js";
 import { state, isOwner, canWrite } from "../data/store.js";
 import { lookupCode, status } from "../lib/expiry.js";
 import { receiptHtml, printReceipt } from "../lib/receipt.js";
+import { linePrice, saleNo } from "../data/apply.js";
 
 // cid: this sale's id for the database, made once and kept across retries, so
 // a sale resent after a dropped connection is not sold twice. Any change to
@@ -16,11 +17,8 @@ const st = { cart: [], discount: "", method: "cash", paid: "", cid: null, q: "" 
 
 const item = (id) => state.items.find((i) => i.id == id);
 
-// Same rule as create_sale() in the database; shown here, decided there.
-export function linePrice(it, qty) {
-  const ws = +it.price_wholesale > 0 && +it.wholesale_min_qty > 0 && qty >= +it.wholesale_min_qty;
-  return { price: ws ? +it.price_wholesale : +it.price, ws };
-}
+// linePrice: the same rule as create_sale() in the database; shown here, decided there.
+export { linePrice };
 
 function totals() {
   let sub = 0,
@@ -30,7 +28,10 @@ function totals() {
     if (!it) continue;
     const p = linePrice(it, l.qty).price;
     sub += p * l.qty;
-    if (!(p > 0) || l.qty > +it.qty) problems++;
+    // Offline, the count on this device can be behind (another till received
+    // stock): the goods are in the customer's hand, so the sale goes ahead and
+    // the server flags it if the stock really wasn't there.
+    if (!(p > 0) || (l.qty > +it.qty && state.online)) problems++;
   }
   const discount = Math.min(Math.max(+st.discount || 0, 0), sub),
     total = sub - discount,
@@ -145,13 +146,19 @@ export async function charge() {
     paid: tt.paid,
   });
   clear();
-  showReceipt(sale.id);
+  if (sale?.pending) toast(t("sync.savedHere"));
+  showReceipt(sale.client_id);
 }
 
-export function showReceipt(id) {
-  const sale = state.sales.find((x) => x.id == id);
+// Receipts are found by the till's id for the sale (client_id), which stays
+// the same when a sale made offline reaches the server and gets its own id.
+const find = (cid) => state.sales.find((x) => x.client_id == cid || x.id == cid);
+
+export function showReceipt(cid) {
+  const sale = find(cid);
   if (!sale) return;
-  const lines = state.saleLines.filter((l) => l.sale_id == id),
+  const id = sale.client_id,
+    lines = state.saleLines.filter((l) => l.sale_id == sale.id),
     html = receiptHtml(state.shop, sale, lines),
     dlg = $("#dlg");
   dlg.innerHTML = `${html}<div class="row mt"><button class="b" data-act="posPrint" data-id="${E(id)}">${t(
@@ -161,16 +168,16 @@ export function showReceipt(id) {
   dlg.querySelector(".b").focus();
 }
 
-export function printSale(id) {
-  const sale = state.sales.find((x) => x.id == id);
-  if (sale) printReceipt(receiptHtml(state.shop, sale, state.saleLines.filter((l) => l.sale_id == id)));
+export function printSale(cid) {
+  const sale = find(cid);
+  if (sale) printReceipt(receiptHtml(state.shop, sale, state.saleLines.filter((l) => l.sale_id == sale.id)));
 }
 
-export async function voidIt(id) {
-  const sale = state.sales.find((x) => x.id == id);
-  if (!sale || !confirm(t("pos.askVoid", { n: sale.receipt_no, total: fmt(sale.total) }))) return;
-  await store.voidSale(id);
-  toast(t("pos.voided", { n: sale.receipt_no }));
+export async function voidIt(cid) {
+  const sale = find(cid);
+  if (!sale || !confirm(t("pos.askVoid", { n: saleNo(sale), total: fmt(sale.total) }))) return;
+  await store.voidSale(sale.id);
+  toast(t("pos.voided", { n: saleNo(sale) }));
 }
 
 // ---------- drawing ----------
@@ -233,17 +240,19 @@ function salesHtml() {
       ? `<table class="rt">${today
           .map(
             (x) =>
-              `<tr class="${x.status == "void" ? "void" : ""}"><td data-l="${E(t("th.receipt"))}"><b>#${x.receipt_no}</b></td><td data-l="${E(
+              `<tr class="${x.status == "void" ? "void" : ""}"><td data-l="${E(t("th.receipt"))}"><b>#${E(saleNo(x))}</b>${
+                x.pending ? ` <span class="tag wait">${t("sync.tag")}</span>` : ""
+              }</td><td data-l="${E(
                 t("th.time"),
               )}">${fTime(x.created_at, false)}</td><td data-l="${E(t("th.qty"))}">${num(
                 count.get(x.id) || 0,
               )}</td><td data-l="${E(t("th.total"))}">${fmt(x.total)}</td><td data-l="${E(t("th.method"))}">${t(
                 x.status == "void" ? "pos.voidTag" : x.method == "cash" ? "pos.cash" : "pos.transfer",
-              )}</td><td class="act"><button class="g" data-act="posReceipt" data-id="${E(x.id)}" title="${E(
+              )}</td><td class="act"><button class="g" data-act="posReceipt" data-id="${E(x.client_id)}" title="${E(
                 t("pos.receipt"),
               )}">🧾</button>${
                 isOwner() && x.status != "void"
-                  ? ` <button class="g" data-act="posVoid" data-id="${E(x.id)}">${t("pos.void")}</button>`
+                  ? ` <button class="g" data-act="posVoid" data-id="${E(x.client_id)}">${t("pos.void")}</button>`
                   : ""
               }</td></tr>`,
           )

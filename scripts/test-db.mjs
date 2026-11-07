@@ -114,13 +114,13 @@ const lotsOf = async (id) =>
   (await as(B, "select to_char(expiry, 'YYYY-MM-DD') e, qty::int q from lots where item_id = $1 order by expiry", [id]))
     .rows.map((r) => `${r.e}:${r.q}`)
     .join(" ");
-// Stock equals its movements, and dated stock never exceeds stock.
+// Stock equals its movements, and dated stock never exceeds stock (none when below zero).
 const balanced = async () => {
   const bad = await as(B, `
     select i.sku from items i
     where i.qty <> coalesce((select sum(case when m.type = 'in' then m.qty else -m.qty end)
                              from movements m where m.item_id = i.id), 0)
-       or coalesce((select sum(qty) from lots l where l.item_id = i.id), 0) > i.qty`);
+       or coalesce((select sum(qty) from lots l where l.item_id = i.id), 0) > greatest(i.qty, 0)`);
   if (bad.rows.length) throw new Error("stock out of step for " + bad.rows.map((r) => r.sku).join(", "));
 };
 const milk = (
@@ -280,6 +280,119 @@ await ok("erase removes sales, lines and lots too", async () => {
     "select (select count(*) from sales) + (select count(*) from sale_lines) + (select count(*) from lots) + (select count(*) from items) n",
   );
   eq(n.n, 0, "rows");
+});
+
+console.log("Offline sync");
+// Shop B is empty again after the erase above.
+const juice = (
+  await one(B, "insert into items (shop_id, sku, name, kind, price) values ($1, 'JUICE', 'Juice', 'consumable', 8000) returning id", [shopB])
+).id;
+await as(B, "select adjust_stock($1, 1, 'in', '2099-01-01')", [juice]); // the last unit
+const tillA = (await one(B, "select register_till($1, 'Front') c", [shopB])).c;
+const tillB = (await one(C, "select register_till($1, 'Back') c", [shopB])).c;
+const offSale = (user, cid, lines, at, till, no, method = "cash", paid = 1e9) =>
+  one(
+    user,
+    "select create_sale($1, $2, $3::jsonb, 0, $4, $5, $6::timestamptz, $7, $8, true) id",
+    [shopB, cid, JSON.stringify(lines), method, paid, at, till, no],
+  );
+const ago = (min) => new Date(Date.now() - min * 60e3).toISOString();
+await ok("tills get their own letters", async () => eq(`${tillA} ${tillB}`, "A B", "codes"));
+let offA, offB;
+await ok("two tills each sell the last unit offline: both kept, stock below zero, both flagged", async () => {
+  offA = (await offSale(C, "offline-A-0001", [{ item_id: juice, qty: 1, price: 8000 }], ago(20), "A", 1)).id;
+  offB = (await offSale(C, "offline-B-0001", [{ item_id: juice, qty: 1, price: 8000 }], ago(10), "B", 1)).id;
+  eq(await qtyOf(juice), -1, "juice");
+  eq(await lotsOf(juice), "", "lots");
+  const f = await one(B, "select array_to_string(flags, ',') f from sales where id = $1", [offB]);
+  eq(f.f, "short", "flags on the late one");
+  await balanced();
+});
+await ok("the same offline sale sent twice is sold once", async () => {
+  eq((await offSale(C, "offline-A-0001", [{ item_id: juice, qty: 1, price: 8000 }], ago(20), "A", 1)).id, offA, "id");
+  eq(await qtyOf(juice), -1, "juice unchanged");
+});
+await ok("offline sales keep the device time and sort by it", async () => {
+  const r = await as(B, "select till || '-' || till_no t from sales where shop_id = $1 order by created_at", [shopB]);
+  eq(r.rows.map((x) => x.t).join(" "), "A-1 B-1", "order");
+  const s = await one(B, "select created_at < synced_at - interval '5 minutes' late from sales where id = $1", [offA]);
+  eq(s.late, true, "created before synced");
+});
+await ok("an offline sale keeps the receipt's price and is flagged when it changed", async () => {
+  await as(B, "select adjust_stock($1, 10)", [juice]); // 9
+  const id = (await offSale(C, "offline-A-0002", [{ item_id: juice, qty: 2, price: 7000 }], ago(5), "A", 2)).id;
+  const s = await one(B, "select total::int, array_to_string(flags, ',') f from sales where id = $1", [id]);
+  eq(`${s.total} ${s.f}`, "14000 price_changed", "sale");
+});
+await rejects("an online sale still cannot go below zero", () =>
+  sell(C, "online-0000001", [{ item_id: juice, qty: 99 }]));
+await ok("a device clock in the future becomes server time, flagged", async () => {
+  const id = (await offSale(C, "offline-B-0002", [{ item_id: juice, qty: 1, price: 8000 }], "2099-01-01T00:00:00Z", "B", 2)).id;
+  const s = await one(B, "select created_at < now() + interval '1 minute' ok, array_to_string(flags, ',') f from sales where id = $1", [id]);
+  eq(`${s.ok} ${s.f}`, "true clock", "sale");
+});
+await rejects("the same receipt number cannot be used twice on one till", () =>
+  offSale(C, "offline-B-0099", [{ item_id: juice, qty: 1, price: 8000 }], ago(1), "B", 2));
+await rejects("a till that was never registered cannot sell", () =>
+  offSale(C, "offline-Z-0001", [{ item_id: juice, qty: 1, price: 8000 }], ago(1), "Z", 1));
+await ok("a resent stock change is applied once", async () => {
+  const before = await qtyOf(juice),
+    send = () => as(C, "select adjust_stock($1, 5, 'in', '2099-02-01', 'adjust-0000001', $2::timestamptz, true)", [juice, ago(3)]);
+  await send();
+  await send();
+  eq(await qtyOf(juice), before + 5, "juice");
+  await balanced();
+});
+await ok("an offline stock-out may go below zero; online may not", async () => {
+  let threw = false;
+  try {
+    await as(C, "select adjust_stock($1, -999, 'damaged', null, 'adjust-0000002', null, false)", [juice]);
+  } catch {
+    threw = true;
+  }
+  eq(threw, true, "online refused");
+  await as(C, "select adjust_stock($1, -999, 'damaged', null, 'adjust-0000003', null, true)", [juice]);
+  if ((await qtyOf(juice)) >= 0) throw new Error("not below zero");
+  await balanced();
+  await as(B, "select set_stock($1, 4, 'count')", [juice]); // the recount
+  eq(await qtyOf(juice), 4, "recounted");
+});
+await ok("receiving into negative stock fills the hole first, then the lot", async () => {
+  await offSale(C, "offline-A-0003", [{ item_id: juice, qty: 6, price: 8000 }], ago(2), "A", 3); // 4 → -2
+  await as(B, "select adjust_stock($1, 5, 'in', '2099-05-01')", [juice]); // -2 → 3
+  eq(await lotsOf(juice), "2099-05-01:3", "only what is on the shelf is dated");
+  await balanced();
+});
+await ok("a write-off by date, resent, removes it once", async () => {
+  const send = () =>
+    as(C, "select write_off_expiry($1, '2099-05-01', 2, 'expired', 'wo-00000001', $2::timestamptz)", [juice, ago(1)]);
+  await send();
+  await send();
+  eq(await lotsOf(juice), "2099-05-01:1", "lot");
+  eq(await qtyOf(juice), 1, "juice");
+  await balanced();
+});
+await ok("an offline sale can be voided by its device id, and the void resent", async () => {
+  await as(B, "select void_sale_by_client($1, 'offline-A-0003', $2::timestamptz)", [shopB, ago(1)]);
+  await as(B, "select void_sale_by_client($1, 'offline-A-0003', $2::timestamptz)", [shopB, ago(1)]);
+  eq(await qtyOf(juice), 7, "juice back");
+  await balanced();
+});
+await rejects("staff cannot void by device id", () =>
+  as(C, "select void_sale_by_client($1, 'offline-A-0002')", [shopB]));
+await rejects("another shop cannot sell on my till", () =>
+  one(A, "select create_sale($1, 'x-offline-1', $2::jsonb, 0, 'cash', 1e9, now(), 'A', 50, true)", [
+    shopB,
+    JSON.stringify([{ item_id: juice, qty: 1, price: 1 }]),
+  ]));
+await ok("another shop sees none of my tills", async () => eq((await one(A, "select count(*)::int n from tills")).n, 0, "tills"));
+await rejects("queued ids cannot be read or written directly", () => as(B, "select * from applied_ops"));
+await rejects("stock_move is still not callable by clients", () =>
+  as(B, "select stock_move($1, -1, 'x', null, null, true)", [juice]));
+await ok("erase clears queued ids but keeps the tills", async () => {
+  await as(B, "select erase_shop_data($1)", [shopB]);
+  eq((await db.query(`select count(*)::int n from applied_ops where shop_id = '${shopB}'`)).rows[0].n, 0, "ops");
+  eq((await one(B, "select count(*)::int n from tills")).n, 2, "tills");
 });
 
 console.log("Billing");
