@@ -15,6 +15,8 @@ export const state = {
   savedAt: null, // when this copy came from the server (shown while offline)
   pending: 0, // work done on this device the server doesn't have yet
   failed: [], // queued work the server refused, for the owner to decide
+  tills: [], // the shop's devices that sell (A, B, C...), retired ones too
+  tillFull: false, // this device could not become a till: the plan's tills are all in use
 };
 
 const listeners = new Set();

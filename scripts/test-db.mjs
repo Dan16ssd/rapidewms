@@ -181,14 +181,17 @@ await rejects("another shop cannot write off my lot", async () => {
 console.log("Cashier");
 await as(B, "select adjust_stock($1, 30, 'in', '2099-06-01')", [milk]); // milk 31
 await as(B, "select adjust_stock($1, 10)", [soap]); // soap 10
+// Every sale comes from a till (004); this one stands in for the counter.
+const counter = (await one(B, "select register_till($1, 'Counter') c", [shopB])).c;
 const sell = (user, cid, lines, disc = 0, method = "cash", paid = 1e9) =>
-  one(user, "select create_sale($1, $2, $3::jsonb, $4, $5, $6) id", [
+  one(user, "select create_sale($1, $2, $3::jsonb, $4, $5, $6, null, $7) id", [
     shopB,
     cid,
     JSON.stringify(lines),
     disc,
     method,
     paid,
+    counter,
   ]);
 let sale1;
 await ok("a sale takes stock and is priced on the server", async () => {
@@ -283,6 +286,8 @@ await ok("erase removes sales, lines and lots too", async () => {
 });
 
 console.log("Offline sync");
+// The offline checks start with no tills, as a new shop would.
+await db.exec(`delete from tills where shop_id = '${shopB}'`);
 // Shop B is empty again after the erase above.
 const juice = (
   await one(B, "insert into items (shop_id, sku, name, kind, price) values ($1, 'JUICE', 'Juice', 'consumable', 8000) returning id", [shopB])
@@ -393,6 +398,41 @@ await ok("erase clears queued ids but keeps the tills", async () => {
   await as(B, "select erase_shop_data($1)", [shopB]);
   eq((await db.query(`select count(*)::int n from applied_ops where shop_id = '${shopB}'`)).rows[0].n, 0, "ops");
   eq((await one(B, "select count(*)::int n from tills")).n, 2, "tills");
+});
+
+console.log("Till limit");
+// Shop B has tills A and B in use, and the trial allows 2. The erase above emptied it.
+const tea = (
+  await one(B, "insert into items (shop_id, sku, name, price) values ($1, 'TEA', 'Tea', 8000) returning id", [shopB])
+).id;
+const limitSale = (till, at, offline, cid) =>
+  one(B, "select create_sale($1, $2, $3::jsonb, 0, 'cash', 1e9, $4::timestamptz, $5, null, $6) id", [
+    shopB,
+    cid,
+    JSON.stringify([{ item_id: tea, qty: 1, price: 8000 }]),
+    at,
+    till,
+    offline,
+  ]);
+await as(B, "select adjust_stock($1, 10)", [tea]);
+await rejects("a third device cannot register on a 2-till plan", () => as(C, "select register_till($1, 'Extra')", [shopB]));
+await rejects("a device with no till cannot sell", () => limitSale(null, null, false, "limit-none-1"));
+await rejects("the owner cannot raise the limit", () => as(B, "update shops set max_tills = 50 where id = $1", [shopB]));
+await rejects("staff cannot retire a till", () => as(C, "select retire_till($1, 'B')", [shopB]));
+await rejects("another shop cannot retire my till", () => as(A, "select retire_till($1, 'B')", [shopB]));
+await ok("a till sells before it is retired", async () => limitSale("B", null, false, "limit-b-1"));
+await as(B, "select retire_till($1, 'B')", [shopB]);
+await rejects("a retired till cannot sell online", () => limitSale("B", null, false, "limit-b-2"));
+await ok("an offline sale made before retiring is still accepted", async () => limitSale("B", ago(5), true, "limit-b-3"));
+await rejects("an offline sale made after retiring is refused", async () => {
+  await db.exec(`update tills set retired_at = now() - interval '10 minutes' where shop_id = '${shopB}' and code = 'B'`);
+  return limitSale("B", ago(1), true, "limit-b-4");
+});
+await ok("retiring frees the place, and the letter is not given out again", async () =>
+  eq((await one(C, "select register_till($1, 'New phone') c", [shopB])).c, "C", "code"));
+await ok("a bigger plan allows more tills", async () => {
+  await db.exec(`update shops set max_tills = 4 where id = '${shopB}'`);
+  eq((await one(C, "select register_till($1, 'PC') c", [shopB])).c, "D", "code");
 });
 
 console.log("Billing");

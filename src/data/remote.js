@@ -38,6 +38,10 @@ function friendly(e) {
   // Chrome, Safari and Firefox word a lost connection differently.
   if (/failed to fetch|load failed|network/i.test(m)) return err("err.offline");
   if (/unknown till/i.test(m)) return err("err.till");
+  const full = /till limit reached: (d+) of (d+)/i.exec(m);
+  if (full) return err("err.tillFull", { max: full[2] });
+  if (/not a till/i.test(m)) return err("err.noTill");
+  if (/till retired/i.test(m)) return err("err.tillRetired");
   return new Error(m);
 }
 const fail = (code, params) => {
@@ -52,7 +56,7 @@ const must = async (p) => {
 // ---------- session & shop ----------
 
 export async function myShops() {
-  return must(sb.from("members").select("role, shops(id, name, plan, plan_until)").eq("user_id", state.user.id));
+  return must(sb.from("members").select("role, shops(id, name, plan, plan_until, max_tills)").eq("user_id", state.user.id));
 }
 
 export const createShop = (name) => must(sb.rpc("create_shop", { p_name: name }));
@@ -63,7 +67,6 @@ export async function openShop(m) {
   localStorage.lastShop = state.shop.id;
   server = null;
   await reload();
-  await ensureTill();
   watch();
   if (state.pending) sync().catch(() => {});
 }
@@ -75,7 +78,7 @@ function watch() {
   if (channel) sb.removeChannel(channel);
   const filter = `shop_id=eq.${state.shop.id}`;
   channel = sb.channel("shop-" + state.shop.id);
-  for (const table of ["items", "orders", "movements", "settings", "lots", "sales", "sale_lines"])
+  for (const table of ["items", "orders", "movements", "settings", "lots", "sales", "sale_lines", "tills"])
     channel.on("postgres_changes", { event: "*", schema: "public", table, filter }, () => {
       clearTimeout(reloadTimer);
       reloadTimer = setTimeout(() => navigator.onLine && reload().catch(() => {}), 300);
@@ -97,7 +100,7 @@ export async function reload() {
   const id = state.shop.id,
     since = new Date(Date.now() - 30 * 864e5).toISOString(),
     sel = (table) => sb.from(table).select("*", { count: "exact" }).eq("shop_id", id);
-  const [items, orders, movements, settings, shop, lots, sales, saleLines] = await Promise.all([
+  const [items, orders, movements, settings, shop, lots, sales, saleLines, tills] = await Promise.all([
     all(() => sel("items").order("sku")),
     // created_at alone is not unique, so id breaks ties and keeps paging stable.
     all(() => sel("orders").order("created_at", { ascending: false }).order("id"), CAP.orders),
@@ -106,11 +109,12 @@ export async function reload() {
       CAP.movements,
     ),
     must(sb.from("settings").select("*").eq("shop_id", id).maybeSingle()),
-    must(sb.from("shops").select("id, name, plan, plan_until").eq("id", id).single()),
+    must(sb.from("shops").select("id, name, plan, plan_until, max_tills").eq("id", id).single()),
     // Lots are never capped: like products, a missing one is a missing expiry warning.
     all(() => sel("lots").order("expiry").order("id")),
     all(() => sel("sales").gte("created_at", since).order("created_at", { ascending: false }).order("id"), CAP.sales),
     all(() => sel("sale_lines").gte("created_at", since).order("created_at", { ascending: false }).order("id"), CAP.saleLines),
+    all(() => sel("tills").order("created_at").order("id")),
   ]);
   server = {
     items: items.rows,
@@ -120,6 +124,7 @@ export async function reload() {
     lots: lots.rows,
     sales: sales.rows,
     saleLines: saleLines.rows,
+    tills: tills.rows,
     settings: settings || state.settings,
     truncated: [items, orders, movements, sales, saleLines].some((r) => r.rows.length < r.total),
   };
@@ -129,6 +134,7 @@ export async function reload() {
   await C.put("snap", id, { ...server, role: state.role, savedAt: state.savedAt }).catch(() => {});
   localStorage["rapidewms.lastShop." + state.user.id] = id;
   await rebuild();
+  await ensureTill();
 }
 
 /** Open the last shop this user had, from the copy on this device. */
@@ -303,6 +309,7 @@ async function rebuild() {
     lots: s.lots,
     sales: s.sales,
     saleLines: s.saleLines,
+    tills: s.tills || [],
     shop: s.shop,
     truncated: s.truncated,
   });
@@ -372,26 +379,65 @@ export async function discardFailed(id) {
 // its own receipts, so two tills offline at the same time never hand out the
 // same number. Kept per shop in this browser.
 const tillKey = () => "rapidewms.till." + state.shop.id;
-export function myTill() {
+// Kept as {code, next}, or {retired: true} once the owner retired it: that
+// device then waits for someone to tap "Use as a till" instead of taking the
+// place back by itself.
+function savedTill() {
   try {
     return JSON.parse(localStorage[tillKey()]);
   } catch {
     return null;
   }
 }
+export function myTill() {
+  const t = savedTill();
+  return t && t.code ? t : null;
+}
 function nextTillNo(till) {
   const no = till.next;
   localStorage[tillKey()] = JSON.stringify({ ...till, next: no + 1 });
   return no;
 }
+// Run after every fresh copy from the server. The plan sets how many tills can
+// be in use (shops.max_tills); a device past that can look but not sell.
 async function ensureTill() {
-  if (myTill() || !navigator.onLine || !canWrite()) return;
+  const mine = myTill();
+  // The owner retired this device's till: it lets go of the letter.
+  if (mine && server?.tills && !server.tills.some((x) => x.code == mine.code && !x.retired_at))
+    localStorage[tillKey()] = JSON.stringify({ retired: true });
+  if (myTill() || savedTill()?.retired || !navigator.onLine || !canWrite()) return setFull(false);
+  await register().catch(() => {});
+}
+async function register() {
   try {
-    const code = await rpc("register_till", { p_shop: state.shop.id, p_name: "" });
+    const code = await rpc("register_till", { p_shop: state.shop.id, p_name: deviceName() });
     if (!myTill()) localStorage[tillKey()] = JSON.stringify({ code, next: 1 });
-  } catch {
-    // Tried again next time the shop opens; until then receipts use the server's number.
+    setFull(false);
+  } catch (e) {
+    setFull(e.code == "err.tillFull");
+    throw e;
   }
+}
+/** "Use as a till" on a device that has none, e.g. after its till was retired. */
+export async function registerTill() {
+  await register();
+  await reload();
+}
+function setFull(full) {
+  if (state.tillFull == full && !full) return;
+  state.tillFull = full;
+  emit();
+}
+// A short name for the till list, so the owner can tell the devices apart.
+function deviceName() {
+  const ua = navigator.userAgent;
+  return /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Windows PC" : /Mac/.test(ua) ? "Mac" : "";
+}
+
+/** Owner: free a till's place, for a phone that is lost, broken or replaced. */
+export async function retireTill(code) {
+  await rpc("retire_till", { p_shop: state.shop.id, p_code: code });
+  await reload();
 }
 
 // Bulk import: new SKUs only, existing ones are skipped. Returns count added.

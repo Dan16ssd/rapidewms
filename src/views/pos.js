@@ -129,8 +129,13 @@ function suggest() {
     .join("");
 }
 
+// With a server, only a device registered as a till sells (004_till_limit.sql).
+const noTill = () => store.configured && !store.myTill();
+const tillProblem = () => t(state.tillFull ? "err.tillFull" : "err.noTill", { max: state.shop?.max_tills ?? "" });
+
 export async function charge() {
   if (!canWrite()) return toast(t("err.readonly"), true);
+  if (noTill()) return toast(tillProblem(), true);
   const tt = totals();
   if (!st.cart.length) return toast(t("err.emptySale"), true);
   if (st.method == "cash" && tt.paid < tt.total) {
@@ -274,7 +279,10 @@ export function refresh() {
   $("#pcashbox").hidden = st.method != "cash";
   $("#pquick").innerHTML = quickHtml(tt.total);
   document.querySelectorAll("[data-act=posMethod]").forEach((b) => b.classList.toggle("on", b.dataset.m == st.method));
+  $("#ptill").hidden = !noTill();
+  $("#ptill").textContent = noTill() ? tillProblem() : "";
   $("#pcharge").disabled =
+    noTill() ||
     !st.cart.length || tt.problems > 0 || (st.method == "cash" && tt.paid < tt.total);
   $("#pcount").textContent = st.cart.length ? t("pos.lines", { n: st.cart.reduce((a, l) => a + l.qty, 0) }) : "";
   $("#psales").innerHTML = salesHtml();
@@ -303,7 +311,7 @@ export default function pos() {
     st.paid,
   )}" placeholder="0"></label><div class="row quick" id="pquick"></div><div class="sh mt">${t(
     "pos.change",
-  )}</div><b class="n" id="pchg"></b></div><button class="b charge" id="pcharge" data-act="posCharge">${t(
+  )}</div><b class="n" id="pchg"></b></div><p class="plan expired mt" id="ptill" hidden></p><button class="b charge" id="pcharge" data-act="posCharge">${t(
     "pos.charge",
   )}</button><button class="g mt" data-act="posClear">${t("pos.clear")}</button></div><div class="card ts wide" id="psales"></div></div>`;
 }

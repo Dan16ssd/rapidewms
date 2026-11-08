@@ -370,6 +370,16 @@ const A = {
     await store.eraseAll();
     toast(t("msg.erased"));
   },
+  async retireTill(el) {
+    const code = el.dataset.code;
+    if (!confirm(t("ask.retireTill", { code }))) return;
+    await store.retireTill(code);
+    toast(t("msg.tillRetired", { code }));
+  },
+  async registerTill() {
+    await store.registerTill();
+    if (store.myTill()) toast(t("sys.till", { code: store.myTill().code }));
+  },
   // Queued work stays on this device and is sent after the next sign-in,
   // but nobody should leave a till believing it is already on the server.
   signOut: () => (!state.pending || confirm(tn("sync.askSignOut", state.pending))) && store.signOut(),

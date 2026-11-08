@@ -30,6 +30,8 @@ export const {
   sync,
   openCached,
   myTill,
+  registerTill,
+  retireTill,
   retryFailed,
   discardFailed,
 } = B;

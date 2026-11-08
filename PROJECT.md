@@ -181,10 +181,12 @@ scripts/check-i18n.mjs     Translation completeness + hardcoded-text check
 
 `npm run backup:verify` restores the newest file into a throwaway Postgres built from `supabase/migrations`, with every constraint enforced, then re-derives each product's stock from its movements. It rejects a truncated file, a file whose rows break a foreign key, and one whose stock no longer matches its history — all three are covered by tests. Backups are written outside the repository, and `*.ndjson.gz` is gitignored, because the repository is public.
 
-**Manual billing** (after the customer pays by BCEL One / LAPNet QR), run in the SQL Editor:
+**Manual billing** (after the customer pays by BCEL One / LAPNet QR), run in the SQL Editor. `max_tills` is how many devices may sell, and it is what the plan is priced on: Small shop 1, Minimart 4 (3 tills + a PC); a trial gets 2.
 ```sql
-update shops set plan = 'paid', plan_until = now() + interval '1 month' where name = 'Shop name';
+update shops set plan = 'paid', plan_until = now() + interval '1 month', max_tills = 4 where name = 'Shop name';
 ```
+
+**Till limit (`004_till_limit.sql`).** Only a device registered as a till can sell; the server refuses a sale from no till or a retired one, and refuses to register more tills than `max_tills`. A device past the limit still opens the shop to look at stock and reports, and the till screen says why it cannot sell. The owner retires a lost or replaced phone in Shop & backup to free its place; its letter is never reused, so receipt numbers can't repeat, and sales it made offline before it was retired are still accepted. A retired device doesn't take its place back by itself: someone has to tap “Use this device as a till” on it. Covered by 12 database checks.
 
 ---
 
@@ -254,7 +256,7 @@ The full written plan is kept outside the repo; this table is the summary.
 
 ## 10. Next steps
 
-1. **Run `003_offline.sql` on the Supabase project** (002 is already applied), then test with two phones: airplane mode on both, sell, reconnect, and compare with the cash count.
+1. **Run `003_offline.sql` and then `004_till_limit.sql` on the Supabase project** (002 is already applied), then set each shop's `max_tills` to its plan and test with two phones: airplane mode on both, sell, reconnect, and compare with the cash count.
 2. **Phone test in a real shop:** scan real products at odd angles, read real expiry labels, and time the product identify on a cheap Android. The numbers in section 5 are from a PC.
 3. **Still to build for the till:** customers and credit sales, shifts with cash count, refunds of part of a sale, Bluetooth thermal printing.
 4. **Shared team testing:** create the Supabase project (section 3) so the team works on the same stock.

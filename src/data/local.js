@@ -39,6 +39,8 @@ export const signOut = async () => {};
 export const sync = async () => ({ sent: [], stopped: false });
 export const openCached = async () => false;
 export const myTill = () => null;
+export const registerTill = async () => {};
+export const retireTill = async () => {};
 export const retryFailed = async () => {};
 export const discardFailed = async () => {};
 
