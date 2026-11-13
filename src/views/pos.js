@@ -8,6 +8,7 @@ import * as store from "../data/store.js";
 import { state, isOwner, canWrite } from "../data/store.js";
 import { lookupCode, status } from "../lib/expiry.js";
 import { receiptHtml, printReceipt } from "../lib/receipt.js";
+import { isQr } from "../lib/camera.js";
 import { linePrice, saleNo } from "../data/apply.js";
 
 // cid: this sale's id for the database, made once and kept across retries, so
@@ -57,11 +58,13 @@ export function add(id, qty = 1) {
 }
 
 /** A scanned or typed code: find the product and add it. */
-export function addCode(code) {
+export function addCode(code, format) {
   code = String(code || "").trim();
   if (!code) return;
   const { item: it } = lookupCode(state.items, code);
   if (it) return add(it.id);
+  // A camera QR that is no product (a payment slip, a link): say so, don't search names.
+  if (isQr(format)) return toast(t("scan.qrText", { text: code.slice(0, 60) }), true);
   // Not a code: the first product whose name matches what was typed.
   const m = matches(code);
   if (m.length == 1 || (m.length && code.length >= 3)) return add(m[0].id);

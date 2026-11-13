@@ -45,10 +45,10 @@ export default function rep(s) {
   return `<div class="card"><h3>${t("rep.export")}</h3>${SETS
     .map(
       (k) =>
-        `<div class="row mt"><b style="flex:1 1 120px">${t("rep.set." + k)}</b>${["pdf", "xlsx", "csv"]
+        `<div class="row mt"><b style="flex:1 1 120px">${t("rep.set." + k)}</b>${["pdf", "print", "xlsx", "csv"]
           .map(
             (f) =>
-              `<button class="g" data-act="export" data-set="${k}" data-fmt="${f}">${{ pdf: "PDF", xlsx: "Excel", csv: "CSV" }[f]}</button>`,
+              `<button class="g" data-act="export" data-set="${k}" data-fmt="${f}">${{ pdf: "PDF", print: t("rep.print"), xlsx: "Excel", csv: "CSV" }[f]}</button>`,
           )
           .join("")}</div>`,
     )

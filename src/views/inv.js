@@ -3,8 +3,8 @@ import { t } from "../i18n/index.js";
 import { isOwner } from "../data/store.js";
 import { status } from "../lib/expiry.js";
 
-// q: search text. f: all | consumable | durable | soon | expired
-export const ui = { q: "", f: "all" };
+// q: search text. f: all | consumable | durable | soon | expired. s: sort order (SORTS)
+export const ui = { q: "", f: "all", s: "name" };
 
 // Column order, shared by the header and the per-cell mobile labels
 // (styles.css shows `data-l` instead of the hidden header on narrow screens).
@@ -36,6 +36,7 @@ export function rows(s) {
     L = s.items.filter(
       (i) => pass(i) && [i.sku, i.name, i.category, i.barcode].join(" ").toLowerCase().includes(q),
     );
+  sortBy(L, next);
   if (!L.length)
     return `<tr><td colspan="9" class="mut">${t(s.items.length ? "inv.noMatch" : "inv.none")}</td></tr>`;
   const l = COLS.map((k) => E(t(k)));
@@ -70,12 +71,30 @@ export function rows(s) {
 }
 
 const FILTERS = ["all", "consumable", "durable", "soon", "expired"];
+const SORTS = ["name", "sku", "expiry", "recent", "qty", "low"];
+
+// Products with no date go last when sorting by expiry; ties keep name order.
+function sortBy(L, next) {
+  const byName = (a, b) => a.name.localeCompare(b.name),
+    far = "9999-12-31",
+    by = {
+      name: byName,
+      sku: (a, b) => a.sku.localeCompare(b.sku, undefined, { numeric: true }),
+      expiry: (a, b) => (next.get(a.id) || far).localeCompare(next.get(b.id) || far) || byName(a, b),
+      recent: (a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")) || byName(a, b),
+      qty: (a, b) => a.qty - b.qty || byName(a, b),
+      low: (a, b) => a.qty - a.min_qty - (b.qty - b.min_qty) || byName(a, b),
+    }[ui.s];
+  if (by) L.sort(by);
+}
 
 export default function inv(s) {
   return `<div class="card"><div class="row"><input id="q" placeholder="${E(t("inv.search"))}" value="${E(
     ui.q,
   )}" data-input="search"><select data-input="invFilter">${FILTERS.map(
     (f) => `<option value="${f}"${f == ui.f ? " selected" : ""}>${t("inv.f." + f)}</option>`,
+  ).join("")}</select><select data-input="invSort" aria-label="${E(t("inv.sortBy"))}">${SORTS.map(
+    (k) => `<option value="${k}"${k == ui.s ? " selected" : ""}>${t("inv.s." + k)}</option>`,
   ).join("")}</select></div></div><div class="card ts"><table class="rt"><thead><tr>${COLS.map(
     (k) => `<th>${t(k)}</th>`,
   ).join("")}<th></th></tr></thead><tbody id="tb">${rows(s)}</tbody></table></div>`;

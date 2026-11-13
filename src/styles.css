@@ -774,6 +774,17 @@ table.cart td {
 #print {
   display: none;
 }
+/* The same font as the PDF export: Phetsarath for Lao, DejaVu for Latin. */
+@font-face {
+  font-family: "RAPIDEWMS PDF";
+  src: url("./assets/fonts/pdf-regular.ttf") format("truetype");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "RAPIDEWMS PDF";
+  src: url("./assets/fonts/pdf-bold.ttf") format("truetype");
+  font-weight: 700;
+}
 @media print {
   body.printing > :not(#print) {
     display: none !important;
@@ -790,6 +801,38 @@ table.cart td {
   }
   @page {
     margin: 4mm;
+  }
+  /* A printed report: A4 sideways, plain heading row, no colour. */
+  @page report {
+    size: A4 landscape;
+    margin: 12mm;
+  }
+  body.printing .report {
+    page: report;
+    font: 10px "RAPIDEWMS PDF", "Noto Sans Lao", sans-serif;
+    color: #000;
+  }
+  body.printing .report h4 {
+    font-size: 13px;
+    margin: 0 0 8px;
+  }
+  body.printing .report table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  body.printing .report th {
+    text-align: left;
+    font-weight: 700;
+    background: none;
+    border-bottom: 1.5px solid #000;
+    padding: 4px 6px;
+  }
+  body.printing .report td {
+    border-bottom: 0.5px solid #bbb;
+    padding: 3px 6px;
+  }
+  body.printing .report thead {
+    display: table-header-group; /* the heading row repeats on every page */
   }
 }
 

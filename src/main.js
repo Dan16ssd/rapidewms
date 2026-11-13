@@ -467,6 +467,10 @@ const INPUT = {
     invUi.f = el.value;
     $("#tb").innerHTML = invRows(state);
   },
+  invSort(el) {
+    invUi.s = el.value;
+    $("#tb").innerHTML = invRows(state);
+  },
   pos: (el) => till.typed(el),
   scanMode: () => syncScanView(),
   scanExpiry(el) {
@@ -498,7 +502,7 @@ document.addEventListener("input", (ev) => {
 document.addEventListener("change", (ev) => {
   const k = ev.target.dataset?.input;
   if (
-    ["setting", "importCsv", "lang", "invFilter", "scanMode"].includes(k) ||
+    ["setting", "importCsv", "lang", "invFilter", "invSort", "scanMode"].includes(k) ||
     (k == "conv" && ev.target.tagName == "SELECT")
   )
     run(INPUT[k], ev.target);

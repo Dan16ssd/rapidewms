@@ -11,6 +11,12 @@ import wasmUrl from "zxing-wasm/reader/zxing_reader.wasm?url";
 
 // Everything a shop meets: retail barcodes, shipping labels, QR, and the
 // GS1 DataMatrix that carries expiry dates on medicine.
+// A QR usually carries text or a link (a payment slip, a website), not a
+// product number. Data Matrix stays a barcode: on medicine it is GS1 data.
+export const isQr = (format) => format == "qr_code";
+// "ean_13" -> "EAN-13", for showing which kind of code was read.
+export const formatName = (format) => (format ? format.replace(/_/g, "-").toUpperCase() : "");
+
 const WANT = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "itf", "qr_code", "data_matrix"];
 
 let detectorPromise = null;

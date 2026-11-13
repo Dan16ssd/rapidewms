@@ -55,7 +55,11 @@ export async function askExpiry(it, current = "") {
   return f ? f.expiry : null;
 }
 
-export async function onScan(c) {
+// "QR" or "Barcode EAN-13" in front of a result, when the camera read it.
+const kindTag = (format) =>
+  format ? `<span class="tag">${camera.isQr(format) ? t("scan.qr") : t("scan.barcode", { f: camera.formatName(format) })}</span> ` : "";
+
+export async function onScan(c, format) {
   c = String(c).trim();
   const n = Date.now();
   if (!c || (c == last && n - lt < 2500) || $("#dlg").open) return;
@@ -65,12 +69,16 @@ export async function onScan(c) {
   const { item: it, code, expiry: printed } = lookupCode(state.items, c),
     m = $("#mode").value,
     q = Math.max(1, +$("#sq").value || 1);
+  // A QR that is no product is usually a link or a payment slip: show it, don't offer to add it.
+  if (!it && camera.isQr(format))
+    return log(`${kindTag(format)}<span class="mut">${t("scan.qrText", { text: `<b>${E(c.slice(0, 120))}</b>` })}</span>`);
   if (!it)
     return log(
-      `<span class="warn">${t("scan.unknown", { code: `<b>${E(code)}</b>` })}</span> <button class="g" data-act="addItem" data-code="${E(code)}">${t("scan.addNew")}</button>`,
+      `${kindTag(format)}<span class="warn">${t("scan.unknown", { code: `<b>${E(code)}</b>` })}</span> <button class="g" data-act="addItem" data-code="${E(code)}">${t("scan.addNew")}</button>`,
     );
   if (m == "look")
     return log(
+      kindTag(format) +
       t("scan.inStock", { name: E(it.name), sku: E(it.sku), qty: `<b>${+it.qty}</b>` }) +
         expTag(printed || nextExpiry(it.id)),
     );
@@ -96,7 +104,7 @@ export async function onScan(c) {
     await adjust(it.id, m == "in" ? q : -q, "scan", expiry);
     const now = state.items.find((i) => i.id == it.id);
     log(
-      `<span class="${m}">${t("scan.ok", {
+      `${kindTag(format)}<span class="${m}">${t("scan.ok", {
         name: E(it.name),
         sku: E(it.sku),
         sign: m == "in" ? "+" : "−",

@@ -1,11 +1,14 @@
 // PDF / Excel / CSV / ZIP exports. Heavy libraries load only when used.
 import { toCsv } from "./csv.js";
-import { dt, download } from "./util.js";
+import { $, E, dt, download } from "./util.js";
+import { t } from "../i18n/index.js";
 import { saleNo } from "../data/apply.js";
+import regularUrl from "../assets/fonts/pdf-regular.ttf?url";
+import boldUrl from "../assets/fonts/pdf-bold.ttf?url";
 
-// Headers and type words stay English on purpose: csvToItems() matches these
-// header names when a shop re-imports its own export, and jsPDF has no Lao font
-// yet. Localise both together once the font is bundled.
+// CSV and Excel headers stay English on purpose: csvToItems() matches these
+// header names when a shop re-imports its own export. PDF and print are for
+// reading, so there they follow the app language (localised()).
 export const SETS = ["Inventory", "Sales", "Expiry", "Orders", "Movements"];
 
 export const sets = (s) => {
@@ -96,7 +99,97 @@ export const sets = (s) => {
   };
 };
 
+// English header -> i18n key, for the PDF and printed copies.
+const HEAD = {
+  SKU: "sku",
+  Name: "name",
+  Category: "category",
+  Barcode: "barcode",
+  Qty: "qty",
+  Min: "min",
+  "Cost (LAK)": "cost",
+  "Price (LAK)": "price",
+  "Wholesale (LAK)": "wholesale",
+  "Wholesale min": "wholesaleMin",
+  "Value (LAK)": "value",
+  Kind: "kind",
+  "Next expiry": "nextExpiry",
+  Date: "date",
+  Receipt: "receipt",
+  "Unit price (LAK)": "unitPrice",
+  Wholesale: "wsYes",
+  "Line total (LAK)": "lineTotal",
+  Method: "method",
+  Status: "status",
+  Expiry: "expiry",
+  Type: "type",
+  Party: "party",
+  Note: "note",
+};
+// Type and status words in the cells.
+const WORD = {
+  consumable: "kind.consumable",
+  durable: "kind.durable",
+  Inbound: "xw.inbound",
+  Outbound: "xw.outbound",
+  In: "xw.in",
+  Out: "xw.out",
+  Done: "xw.done",
+  Pending: "xw.pending",
+  cash: "xw.cash",
+  transfer: "xw.transfer",
+  paid: "xw.paid",
+  void: "xw.void",
+  yes: "xw.yes",
+};
+const localised = (r) => [
+  r[0].map((h) => (HEAD[h] ? t("xh." + HEAD[h]) : h)),
+  ...r.slice(1).map((row) => row.map((v) => (typeof v == "string" && WORD[v] ? t(WORD[v]) : v))),
+];
+const title = (s, k) => `RAPIDÉWMS · ${s.shop.name} · ${t("rep.set." + k)} · ${new Date().toLocaleDateString()}`;
+
+// The PDF font: Phetsarath for Lao, DejaVu for Latin (scripts/make-pdf-font.py).
+let fontData = null;
+function pdfFont() {
+  const b64 = async (url) => {
+    const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
+    let s = "";
+    for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  };
+  return (fontData ||= Promise.all([b64(regularUrl), b64(boldUrl)]).catch((e) => {
+    fontData = null;
+    throw e;
+  }));
+}
+
+/** Print a set on paper (the print dialog can also save it as a PDF). */
+export async function printSet(s, k) {
+  // The print font loads only when first used: wait for it, or the first
+  // printout comes out in the fallback font.
+  await Promise.all([
+    document.fonts.load('10px "RAPIDEWMS PDF"'),
+    document.fonts.load('bold 10px "RAPIDEWMS PDF"'),
+  ]).catch(() => {});
+  const [head, ...body] = localised(sets(s)[k]);
+  const box = $("#print");
+  box.innerHTML = `<div class="report"><h4>${E(title(s, k))}</h4><table><thead><tr>${head
+    .map((h) => `<th>${E(h)}</th>`)
+    .join("")}</tr></thead><tbody>${body
+    .map((r) => `<tr>${r.map((v) => `<td>${E(String(v ?? ""))}</td>`).join("")}</tr>`)
+    .join("")}</tbody></table></div>`;
+  document.body.classList.add("printing");
+  const done = () => {
+    document.body.classList.remove("printing");
+    removeEventListener("afterprint", done);
+  };
+  addEventListener("afterprint", done);
+  print();
+  setTimeout(done, 1500); // browsers without afterprint
+}
+
 export async function exportSet(s, k, f) {
+  if (f == "print") return printSet(s, k);
   const r = sets(s)[k];
   if (f == "csv") return download(new Blob(["﻿" + toCsv(r)], { type: "text/csv" }), k + ".csv");
   if (f == "xlsx") {
@@ -105,10 +198,30 @@ export async function exportSet(s, k, f) {
     XLSX.utils.book_append_sheet(w, XLSX.utils.aoa_to_sheet(r), k);
     return XLSX.writeFile(w, k + ".xlsx");
   }
-  const [{ jsPDF }, { autoTable }] = await Promise.all([import("jspdf"), import("jspdf-autotable")]);
+  const [{ jsPDF }, { autoTable }, [regular, bold]] = await Promise.all([
+    import("jspdf"),
+    import("jspdf-autotable"),
+    pdfFont(),
+  ]);
   const d = new jsPDF({ orientation: "landscape" });
-  d.text(`RAPIDÉWMS - ${s.shop.name} - ${k} (${new Date().toLocaleDateString()})`, 14, 14);
-  autoTable(d, { head: [r[0]], body: r.slice(1), startY: 20 });
+  d.addFileToVFS("rp-regular.ttf", regular);
+  d.addFont("rp-regular.ttf", "RP", "normal");
+  d.addFileToVFS("rp-bold.ttf", bold);
+  d.addFont("rp-bold.ttf", "RP", "bold");
+  d.setFont("RP", "bold");
+  d.setFontSize(13);
+  d.text(title(s, k), 14, 14);
+  const [head, ...body] = localised(r);
+  autoTable(d, {
+    head: [head],
+    body,
+    startY: 20,
+    styles: { font: "RP", fontSize: 9, textColor: 20, lineColor: 200 },
+    // Plain heading row: bold text and a rule under it, no coloured band.
+    headStyles: { font: "RP", fontStyle: "bold", fillColor: false, textColor: 0, lineWidth: { bottom: 0.4 }, lineColor: 0 },
+    bodyStyles: { lineWidth: { bottom: 0.1 } },
+    alternateRowStyles: { fillColor: false },
+  });
   d.save(k + ".pdf");
 }
 

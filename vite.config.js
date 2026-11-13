@@ -49,7 +49,7 @@ export default defineConfig(({ mode }) => ({
       workbox: {
         // The barcode decoder's WebAssembly is precached: scanning is daily
         // work and has to keep going when the connection drops.
-        globPatterns: ["**/*.{js,css,html,svg,woff2}", "**/assets/zxing_reader-*.wasm"],
+        globPatterns: ["**/*.{js,css,html,svg,woff2}", "**/assets/zxing_reader-*.wasm", "**/assets/pdf-*.ttf"],
         globIgnores: [
           // Every browser that can run this app reads woff2; the .woff copies
           // Fontsource ships beside them would be precached and never used.
