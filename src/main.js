@@ -25,8 +25,6 @@ import exp from "./views/exp.js";
 import cust, { ui as custUi, rows as custRows } from "./views/cust.js";
 import { status, SOON_DAYS, setSoonDays, daysLeft } from "./lib/expiry.js";
 import { CUR, SIGN, kipPer } from "./lib/rates.js";
-import { MODEL_MB, isCached, identify, shrink, crashedBefore } from "./lib/identify.js";
-import { detectImage } from "./lib/camera.js";
 
 const VIEWS = { dash, pos, cust, inv, exp, ord, scan, rep, auto, sys };
 // [view key, icon]; the label and subtitle come from nav.<key> / nav.<key>.sub
@@ -190,14 +188,7 @@ async function itemForm(id, code) {
   };
   const f = await form(t(id ? "title.editItem" : "title.addItem"), [
     { k: "sku", label: t("f.sku"), value: i.sku, required: true },
-    {
-      k: "name",
-      label: t("f.name"),
-      value: i.name,
-      required: true,
-      // "✓ AI ready" once the model is on this device and works offline.
-      tools: [{ act: "identify", label: t((await isCached()) ? "btn.identifyReady" : "btn.identify") }],
-    },
+    { k: "name", label: t("f.name"), value: i.name, required: true },
     { k: "category", label: t("f.category"), value: i.category },
     { k: "unit", label: t("f.unit"), value: i.unit || "", hint: t("f.unitHint") },
     {
@@ -468,50 +459,6 @@ const A = {
     const n = +lot.qty; // read first: the lot is emptied by the write-off
     await store.writeOffLot(lot.id);
     toast(t("msg.writtenOff", { n, sku: it.sku }));
-  },
-  // ---- product photo: barcode + on-device model ----
-  async identify(el) {
-    const fm = el.form;
-    // The camera must open first, straight from the tap: iPhone Safari ignores
-    // a file picker opened after anything is awaited, and nothing happens.
-    let photo = await pickPhoto();
-    if (!photo) return;
-    // Last time the page closed while the AI was working: say so, don't loop.
-    if (crashedBefore() && !confirm(t("ai.crashed"))) return;
-    if (!(await isCached()) && !confirm(t("ai.ask", { mb: MODEL_MB }))) return;
-    let label = el.textContent;
-    try {
-      photo = await shrink(photo);
-      // The same photo often shows the barcode: fill it in if the form has none.
-      const codes = await detectImage(photo).catch(() => []);
-      if (codes[0] && !fm.elements.barcode.value) {
-        fm.elements.barcode.value = codes[0].rawValue;
-        if (!fm.elements.sku.value) fm.elements.sku.value = codes[0].rawValue;
-      }
-      el.textContent = t("ai.loading");
-      const mb = (b) => Math.round(b / 1e6);
-      const r = await identify(
-        photo,
-        // At 100% the files are in but the model still has to start up.
-        (p) =>
-          (el.textContent =
-            p.pct < 100 ? t("ai.download", { pct: p.pct, mb: mb(p.loaded), total: mb(p.total) }) : t("ai.loading")),
-        () => (el.textContent = t("ai.thinking")),
-      );
-      label = t("btn.identifyReady");
-      if (r.name) fm.elements.name.value = r.name;
-      // The type is only filled when the name gives it away; otherwise the
-      // person picks it, rather than the app guessing consumable or not.
-      if (r.type) {
-        if (!fm.elements.category.value) fm.elements.category.value = t("cat." + r.type);
-        fm.elements.kind.value = r.kind;
-        fm.elements.kind.dispatchEvent(new Event("change", { bubbles: true }));
-      }
-      const s = (r.ms / 1000).toFixed(1);
-      toast(r.type ? t("ai.done", { name: r.name, type: t("cat." + r.type), s }) : t("ai.pickType", { name: r.name, s }));
-    } finally {
-      el.textContent = label;
-    }
   },
   // ---- offline work ----
   async syncNow() {

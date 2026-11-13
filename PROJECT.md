@@ -75,7 +75,7 @@ The app picks its backend automatically in `src/data/store.js`:
 | **Till (₭)** | Scan (camera or USB scanner), type a code, or search by name to add products. Change quantities; wholesale price applies automatically from its minimum quantity. Discount, cash or bank transfer, quick cash buttons and change due. Charge is refused if stock is short. Receipt on screen and printable (58 mm thermal or A4 browser print), sequential receipt numbers, today's sales list, owner-only void that restores stock. **Packs:** scanning a carton's barcode adds the carton at its own price and takes size × units from stock. **Expiring price:** a product with a cheaper soon-to-expire batch gets a one-tap switch to sell from that batch. Receipts show the VAT included |
 | **Customers (☺)** | Name, phone and note; visits, money spent and last visit over all time; search; add and edit (anyone), delete (owner). The till has an optional customer box (type a name or phone, or ＋ to add one), and the receipt prints the name |
 | **Expiry (⏳)** | Every dated batch, soonest first: expired, then within 1 week / 1 month / 2 months (the owner picks how early to be warned), later. Once a day the open app can raise a phone/PC notification. The owner can set a lower price for one batch (₭ Price). Write off an expired batch in one tap. Lists consumables that have stock with no date yet. The nav shows a badge when something has expired |
-| **Inventory** | Add, edit and delete products; search; filter by consumable / non-consumable / expiring / expired; +/− stock buttons. Product fields: SKU, name, category, **unit** (can, bottle…), **packs** (📦: carton of 24 with its own barcode and price), **kind (consumable or non-consumable)**, barcode, quantity, **expiry date** (consumables), minimum, unit cost (typed in ₭, ฿, $ or ¥ and stored in ₭ at the shop's rate), **sell price, wholesale price and the quantity wholesale starts at** (all in ₭). **🤖 Identify** names a product from a photo |
+| **Inventory** | Add, edit and delete products; search; filter by consumable / non-consumable / expiring / expired; +/− stock buttons. Product fields: SKU, name, category, **unit** (can, bottle…), **packs** (📦: carton of 24 with its own barcode and price), **kind (consumable or non-consumable)**, barcode, quantity, **expiry date** (consumables), minimum, unit cost (typed in ₭, ฿, $ or ¥ and stored in ₭ at the shop's rate), **sell price, wholesale price and the quantity wholesale starts at** (all in ₭). |
 | **Orders** | Inbound and outbound orders; completing an order updates stock, and an order can only be completed once |
 | **Scanner** | Camera or USB/Bluetooth scanner. Modes: receive, ship, look up. Matches SKU (any case) or barcode, including GS1 codes (the expiry date in a GS1 DataMatrix or GS1-128 code is taken automatically). Receiving a consumable asks for its expiry date: type it (`1227`, `311227`, `31/12/2027`) or **📷 read it from a photo** of the package. Unknown code → "Add as new product" |
 | **Reports & export** | Inventory, sales, customers, expiry, orders and movements as PDF, print, Excel or CSV; currency converter (live rates) |
@@ -111,8 +111,6 @@ Formats: EAN-13/8, UPC-A/E, Code 128, Code 39, ITF, QR, DataMatrix. Laptop webca
 
 Then whole-package phone photos (3000×4000, 2026-11-07): a small date, real **inkjet dot-matrix** print (one line, and MFG + EXP on two lines), blur, faint grey ink, white print on a dark band, a 12° tilt, `BB 31DEC27`, two unlabelled dates, and month-only `EXP 12/2027`: **11/11 correct, 0.3–2.8 s**; dot-matrix close-ups also read. The first version failed the dot-matrix and tilted photos. It now also tries the photo with the dots blurred together at several strengths and resolutions, and tilted ±10°. Real crinkled or curved packaging will do worse, so the date is shown for the person to confirm, never saved alone.
 
-**Identifying a product from a photo** uses SmolVLM-256M on the device: **185 MB download once** (asked first; Wi-Fi recommended), then offline. Measured on a PC with WebGPU: ~1 s per photo after loading; on the CPU ~17 s. **Memory:** iPhone Safari closes a page that uses too much ("A problem repeatedly occurred"). The photo is shrunk to 1024 px first (a phone photo is 50–200 MB once decoded) and the word table is 8-bit: measured page peak 947 → 792 MB. If the page still dies while the AI works, the next start notices, asks before trying again, and moves that device to the CPU when the crash was on WebGPU (`rapidewms.ai.*` keys in localStorage). The model names products well but sorts them badly (asked "can people eat this?" it said yes to a hammer, a shirt and a charger), so it only gives the name, and the type comes from keywords in that name (English, Lao, Thai). When no keyword matches, the person picks consumable or not. Six test products (water, hammer, chips, paracetamol, T-shirt, USB charger): **6/6 named and typed correctly**. It reads Lao and Thai print poorly.
-
 ---
 
 ## 6. Code layout
@@ -136,7 +134,6 @@ src/views/*.js             One file per screen: dash, pos (till), exp (expiry), 
 src/lib/camera.js          Camera barcode reader + green AR box (native or zxing WebAssembly)
 src/lib/expiry.js          Expiry-date reading: typed shortcuts, package text, GS1 codes
 src/lib/ocr.js             Read an expiry date from a photo (Tesseract, loaded on demand)
-src/lib/identify.js        Name a product from a photo (SmolVLM, loaded on demand)
 src/lib/receipt.js         Receipt HTML and printing
 src/i18n/{en,lo,index}.js  All interface text + the t() lookup
 supabase/migrations/001_schema.sql   Tables, row-level security, stock functions
@@ -264,7 +261,7 @@ The full written plan is kept outside the repo; this table is the summary.
 ## 10. Next steps
 
 1. **Run `003_offline.sql` to `007_customers_import.sql` on the Supabase project** (002 is already applied), then set each shop's `max_tills` to its plan and test with two phones: airplane mode on both, sell, reconnect, and compare with the cash count.
-2. **Phone test in a real shop:** scan real products at odd angles, read real expiry labels, and time the product identify on a cheap Android. The numbers in section 5 are from a PC.
+2. **Phone test in a real shop:** scan real products at odd angles and read real expiry labels on a cheap Android. The numbers in section 5 are from a PC.
 3. **Still to build for the till:** customers and credit sales, shifts with cash count, refunds of part of a sale, Bluetooth thermal printing.
 4. **Shared team testing:** create the Supabase project (section 3) so the team works on the same stock.
 5. **Start customer interviews** (week 1 of the sales plan) while the build continues, and confirm the 10% VAT rules with the Department of Taxation before claiming tax compliance.

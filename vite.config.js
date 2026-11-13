@@ -7,16 +7,6 @@ import { VitePWA } from "vite-plugin-pwa";
 export default defineConfig(({ mode }) => ({
   plugins: [
     ...(mode == "lan" ? [basicSsl()] : []),
-    // The AI engine (onnxruntime, 27 MB) is loaded from jsDelivr by identify.js
-    // only when someone identifies a product, so the copy Vite emits is never
-    // used. Shipping it made the GitHub Pages deploy time out.
-    {
-      name: "drop-ort-wasm",
-      apply: "build",
-      generateBundle(_, bundle) {
-        for (const k of Object.keys(bundle)) if (/ort-wasm.*\.wasm$/.test(k)) delete bundle[k];
-      },
-    },
     // Installable app: a shop gets RAPIDÉWMS in the Windows Start menu or on an
     // Android home screen, in its own window, and it opens without internet.
     //
@@ -66,9 +56,6 @@ export default defineConfig(({ mode }) => ({
           "**/assets/html2canvas-*.js",
           "**/assets/index.es-*.js",
           "**/assets/purify.es-*.js",
-          // The on-device AI model's runtime (~580 KB, plus a 27 MB engine and
-          // the model itself). Only shops that use "Identify" ever load it.
-          "**/assets/transformers.web-*.js",
         ],
         // Serve the app shell for a navigation the network can't answer.
         navigateFallback: "index.html",
@@ -84,22 +71,8 @@ export default defineConfig(({ mode }) => ({
             },
           },
           {
-            // The AI runtime and its engine, kept after first use.
-            // The engine comes from jsDelivr (see identify.js and dropOrtWasm).
-            urlPattern: ({ url }) =>
-              /\/assets\/transformers\.web[-.][^/]*$/.test(url.pathname) ||
-              (url.hostname == "cdn.jsdelivr.net" && url.pathname.startsWith("/npm/onnxruntime-web@")),
-            handler: "CacheFirst",
-            options: {
-              cacheName: "rapidewms-ai-runtime",
-              expiration: { maxEntries: 6, maxAgeSeconds: 60 * 60 * 24 * 365 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
-          {
             // The date reader's engine and English data, fetched from the CDN
             // the first time a date is read and kept, so later reads work offline.
-            // (The AI model's own files are kept by the library in its own cache.)
             urlPattern: /^https:\/\/cdn\.jsdelivr\.net\/npm\/(tesseract\.js|tesseract\.js-core|@tesseract\.js-data)@/,
             handler: "CacheFirst",
             options: {

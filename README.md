@@ -35,7 +35,7 @@ Optional: **Authentication → Providers → Email** lets you turn "Confirm emai
 - Dated stock lives in `lots` (product + expiry date + qty). Selling takes the soonest in-date lot first, then undated stock, and expired stock last; a void puts units back into the exact lots they came from.
 - `src/data/store.js` picks the backend: `remote.js` (Supabase, with realtime refresh between devices) when `.env` has keys, otherwise `local.js` (in-browser demo). Offline work: `queue.js` (what waits to be sent), `cache.js` (IndexedDB: the shop copy and the queue) and `apply.js` (the stock and sale rules, shared by the demo and the offline copy). See `PROJECT.md` for the full overview.
 - `src/views/` has one file per screen. Buttons use `data-act="..."`, handled in `src/main.js`.
-- `src/lib/` holds escaping, CSV import/export, and PDF/Excel/ZIP export (loaded on demand); `camera.js` (barcode camera with the green box), `expiry.js` (reading dates and GS1 codes), `ocr.js` (reading a date from a photo), `identify.js` (naming a product from a photo) and `receipt.js`.
+- `src/lib/` holds escaping, CSV import/export, and PDF/Excel/ZIP export (loaded on demand); `camera.js` (barcode camera with the green box), `expiry.js` (reading dates and GS1 codes), `ocr.js` (reading a date from a photo) and `receipt.js`.
 - `src/i18n/` holds the text. `en.js` is the source of truth, `lo.js` the Lao translation; views call `t("key")`, so adding a language means adding one file. Lao is the default for Lao-language browsers. Export column headers stay English on purpose, because the CSV importer matches them and jsPDF has no Lao font yet.
 
 ## Install it as an app
