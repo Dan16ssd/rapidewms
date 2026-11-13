@@ -6,6 +6,8 @@ export const state = {
   settings: { low_alert: true, auto_reorder: false, vat_rate: 10, expiry_days: 30, rates: {} },
   items: [],
   packs: [], // bigger units of a product: { id, item_id, name, size, barcode, price }
+  customers: [], // { id, name, phone, note, created_at }
+  custTotals: {}, // customer id -> { visits, total, last_at }, over all time
   orders: [],
   movements: [], // last 30 days
   lots: [], // units per expiry date, all of them

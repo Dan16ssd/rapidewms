@@ -20,6 +20,36 @@ export function costFields(f) {
     cost: Math.round(typed * rate * 100) / 100,
   };
 }
+/** A customer form ({ name, phone, note }). */
+export function custRow(f) {
+  const name = String(f.name || "").trim().slice(0, 80);
+  if (!name) fail("err.custName");
+  return {
+    name,
+    phone: String(f.phone || "").trim().slice(0, 30) || null,
+    note: String(f.note || "").trim().slice(0, 300),
+  };
+}
+/** The rows of an imported customer list that are not here yet (same phone,
+ * or same name when there is no phone), duplicates within the list dropped. */
+export function newCustomers(list, have) {
+  const phones = new Set(have.map((c) => c.phone).filter(Boolean)),
+    names = new Set(have.map((c) => c.name.toLowerCase())),
+    out = [];
+  for (const f of list) {
+    let c;
+    try {
+      c = custRow(f);
+    } catch {
+      continue;
+    }
+    if (c.phone ? phones.has(c.phone) : names.has(c.name.toLowerCase())) continue;
+    if (c.phone) phones.add(c.phone);
+    names.add(c.name.toLowerCase());
+    out.push(c);
+  }
+  return out;
+}
 /** A pack form ({ name, size, barcode, price }). */
 export function packRow(f) {
   const name = String(f.name || "").trim().slice(0, 30),

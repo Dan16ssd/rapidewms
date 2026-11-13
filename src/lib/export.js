@@ -9,7 +9,7 @@ import boldUrl from "../assets/fonts/pdf-bold.ttf?url";
 // CSV and Excel headers stay English on purpose: csvToItems() matches these
 // header names when a shop re-imports its own export. PDF and print are for
 // reading, so there they follow the app language (localised()).
-export const SETS = ["Inventory", "Sales", "Expiry", "Orders", "Movements"];
+export const SETS = ["Inventory", "Sales", "Customers", "Expiry", "Orders", "Movements"];
 
 export const sets = (s) => {
   const bySku = new Map(s.items.map((i) => [i.id, i.sku])),
@@ -17,7 +17,8 @@ export const sets = (s) => {
     byId = new Map(s.items.map((i) => [i.id, i])),
     next = new Map();
   for (const l of s.lots || []) if (!next.has(l.item_id)) next.set(l.item_id, l.expiry);
-  const sale = new Map((s.sales || []).map((x) => [x.id, x]));
+  const sale = new Map((s.sales || []).map((x) => [x.id, x])),
+    who = new Map((s.customers || []).map((c) => [c.id, c.name]));
   return {
     Inventory: [
       [
@@ -57,7 +58,7 @@ export const sets = (s) => {
     Sales: [
       // Pack and VAT appended, never inserted. VAT is the sale's VAT shared out
       // over its lines, so a sale's lines add up to its VAT.
-      ["Date", "Receipt", "SKU", "Name", "Qty", "Unit price (LAK)", "Wholesale", "Line total (LAK)", "Method", "Status", "Pack", "VAT (LAK)"],
+      ["Date", "Receipt", "SKU", "Name", "Qty", "Unit price (LAK)", "Wholesale", "Line total (LAK)", "Method", "Status", "Pack", "VAT (LAK)", "Customer"],
       ...(s.saleLines || [])
         .filter((l) => sale.has(l.sale_id))
         .map((l) => {
@@ -75,8 +76,17 @@ export const sets = (s) => {
             x.status,
             l.pack_qty ? `${+l.pack_qty} × ${l.pack_name} (${+l.pack_size})` : "",
             +x.subtotal ? Math.round(((+x.vat || 0) * l.line_total * 100) / x.subtotal) / 100 : 0,
+            who.get(x.customer_id) || "",
           ];
         }),
+    ],
+    // Name, phone and note first: the file imports straight back.
+    Customers: [
+      ["Name", "Phone", "Note", "Visits", "Spent (LAK)", "Last visit"],
+      ...(s.customers || []).map((c) => {
+        const tot = s.custTotals?.[c.id];
+        return [c.name, c.phone || "", c.note || "", +(tot?.visits || 0), +(tot?.total || 0), tot?.last_at ? dt(tot.last_at) : ""];
+      }),
     ],
     Expiry: [
       ["SKU", "Name", "Expiry", "Qty", "Value (LAK)"],
@@ -134,6 +144,11 @@ const HEAD = {
   Unit: "unit",
   Pack: "pack",
   "VAT (LAK)": "vat",
+  Customer: "customer",
+  Phone: "phone",
+  Visits: "visits",
+  "Spent (LAK)": "spent",
+  "Last visit": "lastVisit",
 };
 // Type and status words in the cells.
 const WORD = {
@@ -246,6 +261,7 @@ export async function exportZip(s) {
         shop: s.shop,
         items: s.items,
         packs: s.packs,
+        customers: s.customers,
         lots: s.lots,
         orders: s.orders,
         movements: s.movements,

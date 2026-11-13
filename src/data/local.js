@@ -6,7 +6,7 @@
 import { state, emit, canWrite } from "./state.js";
 import { err } from "../i18n/index.js";
 import * as apply from "./apply.js";
-import { costFields, packRow } from "./fields.js";
+import { costFields, packRow, custRow, newCustomers } from "./fields.js";
 
 const KEY = "rapidewms.local";
 const uid = () => crypto.randomUUID();
@@ -21,7 +21,7 @@ function load() {
   } catch {}
   if (!d || !d.shops) d = { shops: [], settings: {} };
   // Data saved before expiry tracking and the till existed lacks these lists.
-  for (const k of ["items", "orders", "movements", "lots", "sales", "sale_lines", "packs"]) d[k] ||= [];
+  for (const k of ["items", "orders", "movements", "lots", "sales", "sale_lines", "packs", "customers"]) d[k] ||= [];
   // ...and settings saved before VAT and expiry reminders.
   for (const id in d.settings) d.settings[id] = { ...SETTINGS, ...d.settings[id] };
   return d;
@@ -96,6 +96,15 @@ export async function reload() {
   const shown = new Set(state.sales.map((x) => x.id));
   state.saleLines = mine(db.sale_lines).filter((l) => shown.has(l.sale_id));
   state.packs = mine(db.packs);
+  state.customers = mine(db.customers).sort((a, b) => a.name.localeCompare(b.name));
+  state.custTotals = {};
+  for (const s of mine(db.sales)) {
+    if (!s.customer_id || s.status != "paid") continue;
+    const t = (state.custTotals[s.customer_id] ||= { customer_id: s.customer_id, visits: 0, total: 0, last_at: null });
+    t.visits++;
+    t.total += +s.total;
+    if (!t.last_at || s.created_at > t.last_at) t.last_at = s.created_at;
+  }
   state.settings = db.settings[shopId()];
   state.shop = db.shops.find((s) => s.id == shopId());
   emit();
@@ -248,7 +257,7 @@ export async function deleteOrder(id) {
 // ---------- the till (mirrors create_sale / void_sale) ----------
 
 // lines: [{ item_id, qty }]. Prices come from the product, never the till.
-export async function createSale({ client_id, lines, discount = 0, method = "cash", paid = 0 }) {
+export async function createSale({ client_id, lines, discount = 0, method = "cash", paid = 0, customer_id = null }) {
   writable();
   // A failing line must leave stock and receipt numbers untouched: snapshot and roll back.
   const before = JSON.stringify(db);
@@ -256,7 +265,15 @@ export async function createSale({ client_id, lines, discount = 0, method = "cas
     const shop = db.shops.find((x) => x.id == shopId()),
       known = db.sales.some((x) => x.shop_id == shopId() && x.client_id == client_id),
       lines0 = lines.map(({ item_id, qty, pack_id, expiry }) => ({ item_id, qty, pack_id, expiry })),
-      sale = apply.sale(db, ctx(), { client_id, lines: lines0, discount, method, paid, receipt_no: (shop.receipt_seq || 0) + 1 });
+      sale = apply.sale(db, ctx(), {
+        client_id,
+        lines: lines0,
+        discount,
+        method,
+        paid,
+        customer_id,
+        receipt_no: (shop.receipt_seq || 0) + 1,
+      });
     if (!known) shop.receipt_seq = sale.receipt_no;
     await commit();
     return sale;
@@ -293,6 +310,7 @@ export async function eraseAll() {
   db.sales = db.sales.filter(keep);
   db.sale_lines = db.sale_lines.filter(keep);
   db.packs = db.packs.filter(keep);
+  db.customers = db.customers.filter(keep);
   db.shops.find((x) => x.id == shopId()).receipt_seq = 0;
   await commit();
 }
@@ -321,6 +339,54 @@ export async function setLotPrice(itemId, expiry, price) {
   const lot = db.lots.find((l) => l.item_id == itemId && l.expiry == expiry && l.shop_id == shopId()) || fail("err.lotNotFound");
   lot.price = price;
   await commit();
+}
+
+// ---------- customers and past sales (mirror 007_customers_import.sql) ----------
+
+export async function saveCustomer(id, f) {
+  writable();
+  const row = custRow(f);
+  if (row.phone && mine(db.customers).some((c) => c.id != id && c.phone == row.phone)) fail("err.custPhone");
+  let c = id && db.customers.find((x) => x.id == id && x.shop_id == shopId());
+  if (c) Object.assign(c, row);
+  else db.customers.push((c = { id: uid(), shop_id: shopId(), created_at: nowIso(), ...row }));
+  await commit();
+  return c.id;
+}
+export async function deleteCustomer(id) {
+  writable();
+  ownerOnly();
+  db.customers = db.customers.filter((c) => !(c.id == id && c.shop_id == shopId()));
+  db.sales.forEach((s) => s.customer_id == id && (s.customer_id = null));
+  await commit();
+}
+export async function importCustomers(list) {
+  writable();
+  const fresh = newCustomers(list, mine(db.customers));
+  for (const c of fresh) db.customers.push({ id: uid(), shop_id: shopId(), created_at: nowIso(), ...c });
+  await commit();
+  return fresh.length;
+}
+export async function importSales(rows, progress = () => {}) {
+  writable();
+  ownerOnly();
+  // All or nothing, like the server's transaction.
+  const before = JSON.stringify(db),
+    shop = db.shops.find((x) => x.id == shopId()),
+    done = { added: 0, skipped: 0 };
+  try {
+    for (const r of rows)
+      if (apply.importSale(db, ctx(), r, (shop.receipt_seq || 0) + 1)) {
+        shop.receipt_seq = (shop.receipt_seq || 0) + 1;
+        done.added++;
+      } else done.skipped++;
+  } catch (e) {
+    db = JSON.parse(before);
+    throw e;
+  }
+  progress(rows.length, rows.length);
+  await commit();
+  return done;
 }
 
 // Other tabs of this browser: pick up their changes.

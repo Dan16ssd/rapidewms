@@ -73,13 +73,14 @@ The app picks its backend automatically in `src/data/store.js`:
 |---|---|
 | **Dashboard** | Money shown in ₭, ฿, $ or ¥ (shop rates). Stock value, units, today's sales, products expiring within 30 days, recent in/out movement chart, low-stock banner |
 | **Till (₭)** | Scan (camera or USB scanner), type a code, or search by name to add products. Change quantities; wholesale price applies automatically from its minimum quantity. Discount, cash or bank transfer, quick cash buttons and change due. Charge is refused if stock is short. Receipt on screen and printable (58 mm thermal or A4 browser print), sequential receipt numbers, today's sales list, owner-only void that restores stock. **Packs:** scanning a carton's barcode adds the carton at its own price and takes size × units from stock. **Expiring price:** a product with a cheaper soon-to-expire batch gets a one-tap switch to sell from that batch. Receipts show the VAT included |
+| **Customers (☺)** | Name, phone and note; visits, money spent and last visit over all time; search; add and edit (anyone), delete (owner). The till has an optional customer box (type a name or phone, or ＋ to add one), and the receipt prints the name |
 | **Expiry (⏳)** | Every dated batch, soonest first: expired, then within 1 week / 1 month / 2 months (the owner picks how early to be warned), later. Once a day the open app can raise a phone/PC notification. The owner can set a lower price for one batch (₭ Price). Write off an expired batch in one tap. Lists consumables that have stock with no date yet. The nav shows a badge when something has expired |
 | **Inventory** | Add, edit and delete products; search; filter by consumable / non-consumable / expiring / expired; +/− stock buttons. Product fields: SKU, name, category, **unit** (can, bottle…), **packs** (📦: carton of 24 with its own barcode and price), **kind (consumable or non-consumable)**, barcode, quantity, **expiry date** (consumables), minimum, unit cost (typed in ₭, ฿, $ or ¥ and stored in ₭ at the shop's rate), **sell price, wholesale price and the quantity wholesale starts at** (all in ₭). **🤖 Identify** names a product from a photo |
 | **Orders** | Inbound and outbound orders; completing an order updates stock, and an order can only be completed once |
 | **Scanner** | Camera or USB/Bluetooth scanner. Modes: receive, ship, look up. Matches SKU (any case) or barcode, including GS1 codes (the expiry date in a GS1 DataMatrix or GS1-128 code is taken automatically). Receiving a consumable asks for its expiry date: type it (`1227`, `311227`, `31/12/2027`) or **📷 read it from a photo** of the package. Unknown code → "Add as new product" |
-| **Reports & export** | Inventory, orders and movements as PDF, Excel or CSV; currency converter (live rates) |
+| **Reports & export** | Inventory, sales, customers, expiry, orders and movements as PDF, print, Excel or CSV; currency converter (live rates) |
 | **Automation** | Low-stock alerts; auto-reorder creates an inbound order for (minimum × 2 − stock) when stock drops below minimum and no inbound order is pending |
-| **Shop & backup** | Plan and trial status, language, VAT rate (included in prices, default 10%, 0 = none), THB/USD/CNY rates, full ZIP backup, CSV product import, erase all data (owner only, must type ERASE) |
+| **Shop & backup** | Plan and trial status, language, VAT rate (included in prices, default 10%, 0 = none), THB/USD/CNY rates, full ZIP backup, **import from a file** (CSV or Excel: products with stock, customers, or past sales; the columns are guessed from Loyverse's and our own headers and can be corrected on a matching screen, with a preview before anything is saved), erase all data (owner only, must type ERASE) |
 
 **Language:** the whole interface is in **Lao and English**. A Lao-language browser gets Lao automatically; the header button and the setting in Shop & backup switch it instantly, and the choice is remembered. Prices show as whole kip (₭12,000, not ₭12,000.00). CSV and Excel column headers stay English so a shop can re-import its own file; PDF and print follow the app language.
 
@@ -190,6 +191,8 @@ update shops set plan = 'paid', plan_until = now() + interval '1 month', max_til
 
 **Packs, expiring price, VAT (`006_units_vat.sql`).** `packs` (owner-written; barcode unique per shop) and `items.unit` / `cost_currency` / `cost_orig`; `lots.price` set by `set_lot_price` (owner); `settings.vat_rate`, `expiry_days`, `rates`. `create_sale` keeps its arguments: a line may carry `pack_id` (qty in packs, stock moves qty × size, pack price) or `expiry` (that batch first via `stock_move`'s new `p_first`, at its price). Each sale stores `vat` and `vat_rate` (VAT = total × rate / (100 + rate)). `apply.js` mirrors all of it for offline and demo. Covered by 16 database checks.
 
+**Customers and import (`007_customers_import.sql`).** `customers` (any member adds or edits, the owner deletes; phone unique per shop) and `sales.customer_id`. 006's `create_sale` is renamed `create_sale_core` (no longer callable) and wrapped by a `create_sale` with an 11th argument `p_customer`; a customer from another shop, or one deleted while the sale waited offline, is ignored and the sale still goes through. `customer_totals(shop)` gives visits and spending over all time (the app loads only 30 days of sales). `import_sales(shop, rows)` (owner, 500 per call) adds past sales as history: till `IMP`, flag `imported`, **no stock movement**, matched to products by SKU then name, customers found by phone then name or added, and the same receipt number twice is added once. One bad receipt stops the whole call. `erase_shop_data` also clears customers. Covered by 21 database checks.
+
 **Staff (`005_staff.sql`).** Each cashier has their own login. The owner taps “Add a cashier” in Shop & backup and gets a one-time code (8 characters, 24 hours, at most 10 open per shop). The cashier creates an account and, on the screen that would otherwise create a shop, types the code under “Join a shop”; they join as staff. The owner's Staff card lists everyone with their email and can cancel codes or remove a cashier (whose till is then retired separately). The `invites` table is reachable only through the functions. Covered by 15 database checks.
 
 ---
@@ -249,7 +252,8 @@ The full written plan is kept outside the repo; this table is the summary.
 - An **off-machine** copy of the backups. Today they only live on one laptop, so a stolen or dead machine loses them; the folder needs to be inside OneDrive, a USB stick or similar.
 - Error tracking (Sentry), so a bug in a shop reaches us without a phone call.
 - Showing **who** made each stock change: `movements.created_by` is recorded but never displayed.
-- Import with column mapping (Loyverse etc.), customers, past-sales import (Phase 3 of the discussion-file plan).
+- Sample export files from SabaiPOS and 4B, to add their column names to the importer (today they are matched by hand).
+- Reports and exports cover the last 30 days of sales only; older (and imported) sales are kept on the server but not shown.
 - Landing page, admin page and Sentry.
 - Barcode labels, stock-count mode and daily summary.
 - The benchmark and proof pages.
@@ -259,7 +263,7 @@ The full written plan is kept outside the repo; this table is the summary.
 
 ## 10. Next steps
 
-1. **Run `003_offline.sql` to `006_units_vat.sql` on the Supabase project** (002 is already applied), then set each shop's `max_tills` to its plan and test with two phones: airplane mode on both, sell, reconnect, and compare with the cash count.
+1. **Run `003_offline.sql` to `007_customers_import.sql` on the Supabase project** (002 is already applied), then set each shop's `max_tills` to its plan and test with two phones: airplane mode on both, sell, reconnect, and compare with the cash count.
 2. **Phone test in a real shop:** scan real products at odd angles, read real expiry labels, and time the product identify on a cheap Android. The numbers in section 5 are from a PC.
 3. **Still to build for the till:** customers and credit sales, shifts with cash count, refunds of part of a sale, Bluetooth thermal printing.
 4. **Shared team testing:** create the Supabase project (section 3) so the team works on the same stock.

@@ -497,6 +497,88 @@ await rejects("a pack from another product is refused", async () => {
 });
 await ok("stock still equals its movements", balanced);
 
+console.log("Customers and import");
+let cust;
+await ok("staff adds a customer", async () => {
+  cust = (await one(C, "insert into customers (shop_id, name, phone) values ($1, 'Mr Somchai', '020 5555 1234') returning id", [shopB])).id;
+});
+await rejects("two customers can't share a phone", () =>
+  as(B, "insert into customers (shop_id, name, phone) values ($1, 'Other', '020 5555 1234')", [shopB]));
+await ok("another shop can't see my customers", async () =>
+  eq((await one(A, "select count(*) n from customers")).n, 0, "rows"));
+await rejects("staff cannot delete a customer", async () => {
+  const r = await as(C, "delete from customers where id = $1", [cust]);
+  if (!r.affectedRows) throw new Error("no change");
+});
+await ok("a sale can name the customer", async () => {
+  await one(C, "select create_sale($1, 'cust-sale-1', $2::jsonb, 0, 'cash', 1e9, null, 'C', null, false, $3) id",
+    [shopB, JSON.stringify([{ item_id: can, qty: 1 }]), cust]);
+  eq((await one(B, "select customer_id from sales where client_id = 'cust-sale-1'")).customer_id, cust, "customer");
+});
+await ok("a customer from another shop is ignored, the sale still counts", async () => {
+  const other = (await one(A, "insert into customers (shop_id, name) values ($1, 'Elsewhere') returning id", [shopA])).id;
+  await one(C, "select create_sale($1, 'cust-sale-2', $2::jsonb, 0, 'cash', 1e9, null, 'C', null, false, $3) id",
+    [shopB, JSON.stringify([{ item_id: can, qty: 1 }]), other]);
+  eq((await one(B, "select customer_id from sales where client_id = 'cust-sale-2'")).customer_id, null, "customer");
+});
+await ok("the 10-argument create_sale still works", async () => {
+  await sellC("old-client-1", [{ item_id: can, qty: 1 }]);
+});
+await rejects("create_sale_core can't be called directly", () =>
+  as(B, "select create_sale_core($1, 'core-1', $2::jsonb, 0, 'cash', 1e9, null, 'C', null, false)",
+    [shopB, JSON.stringify([{ item_id: can, qty: 1 }])]));
+await ok("customer totals count the sales", async () => {
+  const r = await one(B, "select visits, total from customer_totals($1) where customer_id = $2", [shopB, cust]);
+  eq(`${r.visits} ${+r.total}`, "1 10000", "totals");
+});
+await ok("another shop gets no totals", async () =>
+  eq((await as(A, "select * from customer_totals($1)", [shopB])).rows.length, 0, "rows"));
+
+const past = [
+  { ref: "R-1001", at: "2026-01-05T10:00:00+07:00", method: "cash", customer: { name: "Mr Somchai", phone: "020 5555 1234" },
+    lines: [{ sku: "can", qty: 3, price: 9000 }, { name: "Old product", qty: 1, price: 5000 }] },
+  { ref: "R-1002", at: "2026-01-06T11:00:00+07:00", method: "transfer", discount: 1000, customer: { name: "New Lady" },
+    lines: [{ sku: "CAN", qty: 1, price: 10000 }] },
+];
+const stockBefore = await qtyOf(can);
+await ok("the owner imports past sales", async () => {
+  const r = (await one(B, "select import_sales($1, $2::jsonb) r", [shopB, JSON.stringify(past)])).r;
+  eq(`${r.added} ${r.skipped}`, "2 0", "added");
+  const s = await one(B, "select total, method, till, flags, customer_id, created_at from sales where client_id = 'import:R-1001'");
+  eq(`${+s.total} ${s.method} ${s.till} ${s.flags}`, "32000 cash IMP imported", "sale");
+  eq(s.customer_id, cust, "matched by phone");
+  const l = await as(B, "select item_id, sku, name from sale_lines where sale_id = (select id from sales where client_id = 'import:R-1001') order by name");
+  eq(l.rows.map((x) => `${x.item_id ? "item" : "none"}:${x.sku}:${x.name}`).join(" "), "none:-:Old product item:CAN:Soda", "lines");
+  eq(+(await one(B, "select total from sales where client_id = 'import:R-1002'")).total, 9000, "discounted");
+});
+await ok("importing past sales moves no stock", async () => eq(await qtyOf(can), stockBefore, "stock"));
+await ok("importing the same file again adds nothing", async () => {
+  const r = (await one(B, "select import_sales($1, $2::jsonb) r", [shopB, JSON.stringify(past)])).r;
+  eq(`${r.added} ${r.skipped}`, "0 2", "added");
+  eq((await one(B, "select count(*) n from customers where shop_id = $1", [shopB])).n, 2, "customers");
+});
+await rejects("staff cannot import sales", () =>
+  as(C, "select import_sales($1, $2::jsonb)", [shopB, JSON.stringify([{ ...past[0], ref: "S-1" }])]));
+await rejects("another shop cannot import into mine", () =>
+  as(A, "select import_sales($1, $2::jsonb)", [shopB, JSON.stringify([{ ...past[0], ref: "S-2" }])]));
+await rejects("a sale dated in the future is refused", () =>
+  as(B, "select import_sales($1, $2::jsonb)", [shopB, JSON.stringify([{ ...past[0], ref: "F-1", at: "2099-01-01" }])]));
+await rejects("a bad file imports nothing at all", async () => {
+  await as(B, "select import_sales($1, $2::jsonb)", [shopB, JSON.stringify([{ ...past[0], ref: "G-1" }, { ...past[0], ref: "G-2", lines: [{ sku: "CAN", qty: -1, price: 1 }] }])]);
+});
+await ok("...and the good half of it was rolled back", async () =>
+  eq((await one(B, "select count(*) n from sales where client_id = 'import:G-1'")).n, 0, "rows"));
+await ok("voiding an imported sale moves no stock", async () => {
+  const before = await qtyOf(can);
+  await as(B, "select void_sale_by_client($1, 'import:R-1002', null)", [shopB]);
+  eq(await qtyOf(can), before, "stock");
+});
+await ok("the owner deletes a customer; their sales stay", async () => {
+  await as(B, "delete from customers where id = $1", [cust]);
+  eq((await one(B, "select count(*) n from sales where client_id in ('cust-sale-1', 'import:R-1001')")).n, 2, "sales");
+});
+await ok("stock still equals its movements", balanced);
+
 console.log("Staff invites");
 // D is a new cashier with no shop. A owns shop A; C is staff in shop B.
 const D = "00000000-0000-0000-0000-00000000000d";

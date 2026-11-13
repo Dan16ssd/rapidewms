@@ -6,7 +6,7 @@
 // It mirrors the database functions in supabase/migrations, so the screen
 // shows what the server will end up with.
 //
-// db: { items, packs, lots, movements, sales, sale_lines, orders, settings }, where
+// db: { items, packs, customers, lots, movements, sales, sale_lines, orders, settings }, where
 // settings maps shop id → { auto_reorder, vat_rate, ... }. Lists are changed in place.
 // ctx: { shopId, userId, at (ISO time it happened), short (may go below zero) }
 import { err } from "../i18n/index.js";
@@ -130,7 +130,18 @@ function autoReorder(db, it) {
 export function sale(
   db,
   ctx,
-  { id = uid(), client_id, lines, discount = 0, method = "cash", paid = 0, receipt_no = null, till = null, till_no = null },
+  {
+    id = uid(),
+    client_id,
+    lines,
+    discount = 0,
+    method = "cash",
+    paid = 0,
+    receipt_no = null,
+    till = null,
+    till_no = null,
+    customer_id = null,
+  },
 ) {
   const dup = db.sales.find((x) => x.shop_id == ctx.shopId && x.client_id == client_id);
   if (dup) return dup;
@@ -147,6 +158,9 @@ export function sale(
     status: "paid",
     flags: [],
     cashier: ctx.userId ?? null,
+    // A customer that is gone (deleted while the sale waited) is dropped, as create_sale() does.
+    customer_id:
+      customer_id && (db.customers || []).some((c) => c.id == customer_id && c.shop_id == ctx.shopId) ? customer_id : null,
     created_at: at(ctx),
   };
   // One line per product, pack and batch (a batch only counts without a pack).
@@ -197,6 +211,83 @@ export function sale(
   Object.assign(s, { subtotal: sub, discount, total, paid, change_due: paid - total, vat_rate: rate, vat: vatOf(total, rate) });
   db.sales.push(s);
   return s;
+}
+
+/** import_sales(), one sale: { ref, at, method?, discount?, customer?: { name, phone? },
+ * lines: [{ sku?, name?, qty, price }] }. History only: no stock moves.
+ * Returns false when this receipt was imported before. */
+export function importSale(db, ctx, r, receipt_no) {
+  const ref = String(r.ref ?? "").trim().slice(0, 100),
+    bad = (why) => fail("err.importSales", { why: `${ref || "?"}: ${why}` });
+  if (!ref) fail("err.importSales", { why: "a sale has no receipt number" });
+  const client_id = "import:" + ref;
+  if (db.sales.some((x) => x.shop_id == ctx.shopId && x.client_id == client_id)) return false;
+  const when = new Date(r.at);
+  if (isNaN(when) || when > Date.now() + 864e5) bad("no date, or a date in the future");
+  if (!r.lines?.length) bad("no products");
+  const mine = (x) => x.shop_id == ctx.shopId,
+    lower = (v) => String(v ?? "").trim().toLowerCase();
+  // The customer: found by phone, else by name, else added.
+  let customer_id = null;
+  const cname = String(r.customer?.name ?? "").trim().slice(0, 80),
+    phone = String(r.customer?.phone ?? "").trim().slice(0, 30) || null;
+  if (cname || phone) {
+    const c =
+      (phone && db.customers.find((c) => mine(c) && c.phone == phone)) ||
+      (cname && db.customers.find((c) => mine(c) && lower(c.name) == lower(cname)));
+    if (c) customer_id = c.id;
+    else {
+      customer_id = uid();
+      db.customers.push({ id: customer_id, shop_id: ctx.shopId, name: cname || phone, phone, note: "", created_at: at(ctx) });
+    }
+  }
+  const s = {
+    id: uid(),
+    shop_id: ctx.shopId,
+    client_id,
+    receipt_no,
+    till: "IMP",
+    till_no: null,
+    method: lower(r.method) == "transfer" ? "transfer" : "cash",
+    status: "paid",
+    flags: ["imported"],
+    cashier: ctx.userId ?? null,
+    customer_id,
+    created_at: when.toISOString(),
+  };
+  let sub = 0;
+  const lines = r.lines.map((l) => {
+    const qty = +l.qty,
+      price = +(l.price ?? 0);
+    if (!(qty > 0) || !(price >= 0)) bad("a line with a bad quantity or price");
+    const sku = String(l.sku ?? "").trim().slice(0, 100),
+      name = String(l.name ?? "").trim().slice(0, 200),
+      it =
+        (sku && db.items.find((i) => mine(i) && lower(i.sku) == lower(sku))) ||
+        (name && db.items.find((i) => mine(i) && lower(i.name) == lower(name)));
+    sub += qty * price;
+    return {
+      id: uid(),
+      shop_id: ctx.shopId,
+      sale_id: s.id,
+      item_id: it?.id ?? null,
+      sku: it?.sku ?? (sku || "-"),
+      name: it?.name ?? (name || sku || "-"),
+      qty,
+      unit_price: price,
+      wholesale: false,
+      line_total: qty * price,
+      created_at: s.created_at,
+    };
+  });
+  const discount = +(r.discount ?? 0) || 0;
+  if (discount < 0 || discount > sub) bad("a discount bigger than its total");
+  const total = sub - discount,
+    rate = +(db.settings[ctx.shopId]?.vat_rate ?? 0) || 0;
+  Object.assign(s, { subtotal: sub, discount, total, paid: total, change_due: 0, vat_rate: rate, vat: vatOf(total, rate) });
+  db.sales.push(s);
+  db.sale_lines.push(...lines);
+  return true;
 }
 
 /** void_sale(): every unit goes back into the lot it left. Voiding a void sale

@@ -4,11 +4,13 @@ import { $, E, fmt, num, dt } from "./util.js";
 import { t } from "../i18n/index.js";
 import { saleNo } from "../data/apply.js";
 
-export function receiptHtml(shop, sale, lines) {
+export function receiptHtml(shop, sale, lines, customer = null) {
   const row = (a, b, cls = "") => `<tr class="${cls}"><td>${a}</td><td>${b}</td></tr>`;
   return `<div class="receipt"><h4>${E(shop.name)}</h4><p class="c">${t("rc.no", { n: saleNo(sale) })}<br>${dt(
     sale.created_at,
-  )}</p>${sale.status == "void" ? `<p class="c void">${t("rc.void")}</p>` : ""}<table>${lines
+  )}${customer ? `<br>${t("rc.customer", { name: E(customer.name) })}` : ""}</p>${
+    sale.status == "void" ? `<p class="c void">${t("rc.void")}</p>` : ""
+  }<table>${lines
     .map(
       (l) =>
         `<tr><td colspan="2">${E(l.name)}</td></tr>${row(

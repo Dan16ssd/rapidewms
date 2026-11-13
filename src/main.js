@@ -5,9 +5,9 @@ import "@fontsource/noto-sans-lao/lao-400.css";
 import "@fontsource/noto-sans-lao/lao-500.css";
 import "@fontsource/noto-sans-lao/lao-600.css";
 import "@fontsource/noto-sans-lao/lao-700.css";
-import { $, E, toast, form, pickPhoto, checkExpiry, slashDate, dateText, fmt, num } from "./lib/util.js";
+import { $, E, toast, form, pickPhoto, checkExpiry, slashDate, dateText, fmt, num, dt } from "./lib/util.js";
 import { t, tn, errText, setLang, other, applyStatic, fDateTime, fTime } from "./i18n/index.js";
-import { csvToItems } from "./lib/csv.js";
+import { readTable, guessKind, guessColumns, build, KINDS } from "./lib/importer.js";
 import { exportSet, exportZip } from "./lib/export.js";
 import * as store from "./data/store.js";
 import { state, canWrite, isOwner } from "./data/store.js";
@@ -22,16 +22,18 @@ import auto from "./views/auto.js";
 import sys from "./views/sys.js";
 import pos, * as till from "./views/pos.js";
 import exp from "./views/exp.js";
+import cust, { ui as custUi, rows as custRows } from "./views/cust.js";
 import { status, SOON_DAYS, setSoonDays, daysLeft } from "./lib/expiry.js";
 import { CUR, SIGN, kipPer } from "./lib/rates.js";
 import { MODEL_MB, isCached, identify, shrink, crashedBefore } from "./lib/identify.js";
 import { detectImage } from "./lib/camera.js";
 
-const VIEWS = { dash, pos, inv, exp, ord, scan, rep, auto, sys };
+const VIEWS = { dash, pos, cust, inv, exp, ord, scan, rep, auto, sys };
 // [view key, icon]; the label and subtitle come from nav.<key> / nav.<key>.sub
 const N = [
   ["dash", "◔"],
   ["pos", "₭"],
+  ["cust", "☺"],
   ["inv", "▦"],
   ["exp", "⏳"],
   ["ord", "⛟"],
@@ -262,7 +264,117 @@ async function packForm(itemId, packId) {
   toast(t("msg.saved"));
 }
 
+// Add or change a customer; returns the id (or null when cancelled).
+async function custForm(id) {
+  if (!needWrite()) return null;
+  const c = state.customers.find((x) => x.id == id) || { name: "", phone: "", note: "" },
+    f = await form(t(id ? "title.editCust" : "title.addCust"), [
+      { k: "name", label: t("cust.name"), value: c.name, required: true },
+      { k: "phone", label: t("cust.phone"), value: c.phone || "", type: "tel" },
+      { k: "note", label: t("cust.note"), value: c.note || "" },
+    ]);
+  if (!f) return null;
+  const saved = await store.saveCustomer(id || null, f);
+  toast(t("msg.saved"));
+  return saved;
+}
+
+// Import wizard: the file -> what it holds -> which column is which -> check -> import.
+async function importFile(file) {
+  let tb;
+  try {
+    tb = await readTable(file);
+  } catch {
+    return toast(t("imp.unreadable"), true);
+  }
+  if (!tb.rows.length) return toast(t("msg.importEmpty"), true);
+  const kinds = ["products", "customers", ...(isOwner() ? ["sales"] : [])],
+    guessed = guessKind(tb.head),
+    one = await form(
+      t("imp.title", { file: file.name }),
+      [
+        {
+          k: "kind",
+          label: t("imp.what"),
+          type: "select",
+          value: kinds.includes(guessed) ? guessed : "products",
+          options: kinds.map((k) => [k, t("imp.kind." + k)]),
+        },
+      ],
+      t("btn.next"),
+      E(t("imp.rows", { n: num(tb.rows.length) })),
+    );
+  if (!one) return;
+  const kind = one.kind,
+    guess = guessColumns(tb.head, kind),
+    sample = (i) =>
+      tb.rows
+        .slice(0, 3)
+        .map((r) => String(r[i] ?? "").trim())
+        .filter(Boolean)
+        .join(" · ")
+        .slice(0, 60),
+    cols = [["-1", t("imp.none")], ...tb.head.map((h, i) => [String(i), `${h || t("imp.col", { n: i + 1 })}${sample(i) ? "  (" + sample(i) + ")" : ""}`])],
+    two = await form(
+      t("imp.match"),
+      KINDS[kind].map((f) => ({
+        k: f.k,
+        label: t("imp.f." + kind + "." + f.k) + (f.req ? " *" : ""),
+        type: "select",
+        value: String(guess[f.k]),
+        options: cols,
+      })),
+      t("btn.next"),
+      t(kind == "sales" ? "imp.matchSales" : "imp.matchNote"),
+    );
+  if (!two) return;
+  const map = Object.fromEntries(KINDS[kind].map((f) => [f.k, +two[f.k]])),
+    missing = KINDS[kind].filter((f) => f.req && map[f.k] < 0);
+  if (missing.length) return toast(t("imp.need", { f: missing.map((f) => t("imp.f." + kind + "." + f.k)).join(", ") }), true);
+  const { records, dropped } = build(kind, tb.rows, map);
+  if (!records.length) return toast(t("msg.importEmpty"), true);
+  const head = {
+      products: ["imp.h.sku", "imp.h.name", "imp.h.qty", "imp.h.price"],
+      customers: ["imp.h.name", "imp.h.phone", "imp.h.note"],
+      sales: ["imp.h.receipt", "imp.h.date", "imp.h.lines", "imp.h.total"],
+    }[kind],
+    cells = (x) =>
+      kind == "products"
+        ? [x.sku, x.name, num(x.qty), fmt(x.price)]
+        : kind == "customers"
+          ? [x.name, x.phone, x.note]
+          : [x.ref, dt(x.at), num(x.lines.length), fmt(x.lines.reduce((a, l) => a + l.qty * l.price, 0) - x.discount)],
+    preview = `<table class="rt mt"><thead><tr>${head.map((k) => `<th>${t(k)}</th>`).join("")}</tr></thead><tbody>${records
+      .slice(0, 10)
+      .map((x) => `<tr>${cells(x).map((v) => `<td>${E(v ?? "")}</td>`).join("")}</tr>`)
+      .join("")}</tbody></table>`,
+    note = `${t("imp.preview", { n: num(Math.min(10, records.length)), total: num(records.length) })}${
+      dropped ? " " + t("imp.dropped", { n: num(dropped) }) : ""
+    }${kind == "sales" ? " " + t("imp.salesNote") : ""}${preview}`,
+    three = await form(t("imp.confirm"), [], t("imp.go", { n: num(records.length) }), note);
+  if (!three) return;
+  toast(t("imp.working"));
+  let added, skipped;
+  if (kind == "products") (added = await store.importItems(records)), (skipped = records.length - added);
+  else if (kind == "customers") (added = await store.importCustomers(records)), (skipped = records.length - added);
+  else ({ added, skipped } = await store.importSales(records));
+  toast(t("imp.done", { added: num(added), skipped: num(skipped) }));
+}
+
 const A = {
+  addCust: () => custForm(),
+  editCust: (el) => custForm(el.dataset.id),
+  async delCust(el) {
+    const c = state.customers.find((x) => x.id == el.dataset.id);
+    if (!c || !needWrite() || !confirm(t("ask.delCust", { name: c.name }))) return;
+    await store.deleteCustomer(c.id);
+    toast(t("msg.deleted"));
+  },
+  async posNewCust() {
+    const id = await custForm();
+    if (id) till.setCustomer(id);
+  },
+  posNoCust: () => till.setCustomer(null),
   addPack: (el) => packForm(el.dataset.id),
   editPack: (el) => packForm(el.dataset.item, el.dataset.id),
   async lotPrice(el) {
@@ -541,14 +653,14 @@ const INPUT = {
     await store.setSetting(k, v);
     toast(t("msg.saved"));
   },
-  async importCsv(el) {
+  async importFile(el) {
     const f = el.files[0];
     el.value = "";
-    if (!f || !needWrite()) return;
-    const list = csvToItems(await f.text());
-    if (!list.length) return toast(t("msg.importEmpty"), true);
-    const n = await store.importItems(list);
-    toast(n ? tn("msg.imported", n) : t("msg.importNone"));
+    if (f && needWrite()) await importFile(f);
+  },
+  custQ(el) {
+    custUi.q = el.value;
+    $("#ctb").innerHTML = custRows(state);
   },
   lang: (el) => switchLang(el.value),
   invFilter(el) {
@@ -592,12 +704,12 @@ document.addEventListener("click", (ev) => {
 document.addEventListener("input", (ev) => {
   const k = ev.target.dataset?.input;
   if (k == "scanExpiry") slashDate(ev.target, ev);
-  if (["search", "conv", "pos", "scanExpiry"].includes(k)) INPUT[k](ev.target);
+  if (["search", "conv", "pos", "scanExpiry", "custQ"].includes(k)) INPUT[k](ev.target);
 });
 document.addEventListener("change", (ev) => {
   const k = ev.target.dataset?.input;
   if (
-    ["setting", "importCsv", "lang", "invFilter", "invSort", "scanMode", "dashCur"].includes(k) ||
+    ["setting", "importFile", "lang", "invFilter", "invSort", "scanMode", "dashCur"].includes(k) ||
     (k == "conv" && ev.target.tagName == "SELECT")
   )
     run(INPUT[k], ev.target);

@@ -90,8 +90,8 @@ export default function sys(s) {
 <div class="card"><h3>${t("sys.backup")}</h3><div class="row mt"><button class="g" data-act="zip">${t(
     "sys.zip",
   )}</button><label class="g">${t(
-    "sys.importCsv",
-  )}<input type="file" accept=".csv" hidden data-input="importCsv"></label>${
+    "sys.import",
+  )}<input type="file" accept=".csv,.xlsx,.xls,.ods,text/csv" hidden data-input="importFile"></label>${
     isOwner() ? `<button class="g" data-act="erase">${t("sys.erase")}</button>` : ""
   }</div><p class="mut mt">${t("sys.csvNote")}</p></div>`;
 }

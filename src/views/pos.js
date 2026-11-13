@@ -16,7 +16,8 @@ import { linePrice, priceOf, vatOf, saleNo } from "../data/apply.js";
 // the cart makes it a different sale, with a new id.
 // A cart line: { k, id, qty, pack, exp }. pack: a pack id (qty counts packs);
 // exp: the expiry date of a batch sold at its expiring price. k tells lines apart.
-const st = { cart: [], discount: "", method: "cash", paid: "", cid: null, q: "" };
+// cust: the customer's id, or null for a walk-in.
+const st = { cart: [], discount: "", method: "cash", paid: "", cid: null, q: "", cust: null };
 
 const item = (id) => state.items.find((i) => i.id == id);
 const keyOf = (id, pack, exp) => [id, pack || "", exp || ""].join("|");
@@ -123,9 +124,18 @@ export const remove = (id) => setQty(id, 0);
 export const clear = () => {
   st.cart = [];
   st.discount = st.paid = "";
+  st.cust = null;
   changed();
   for (const s of ["#pdisc", "#ppaid"]) if ($(s)) $(s).value = "";
 };
+// The customer box: what the datalist offers, and the customer it names.
+const custLabel = (c) => c.name + (c.phone ? " · " + c.phone : "");
+export function setCustomer(id) {
+  st.cust = id;
+  const box = $("#pcust");
+  if (box) (box.value = ""), box.blur(); // let refresh() swap the box for the name
+  refresh();
+}
 export function setMethod(m) {
   st.method = m;
   refresh();
@@ -139,6 +149,12 @@ export function typed(el) {
   if (el.id == "pq") {
     st.q = el.value;
     return suggest();
+  }
+  if (el.id == "pcust") {
+    const v = el.value.trim().toLowerCase(),
+      c = v && state.customers.find((x) => custLabel(x).toLowerCase() == v || x.phone == el.value.trim());
+    if (c) setCustomer(c.id);
+    return;
   }
   if (el.id == "pdisc") st.discount = el.value;
   if (el.id == "ppaid") st.paid = el.value;
@@ -180,6 +196,7 @@ export async function charge() {
     discount: tt.discount,
     method: st.method,
     paid: tt.paid,
+    customer_id: st.cust,
   });
   clear();
   if (sale?.pending) toast(t("sync.savedHere"));
@@ -195,7 +212,7 @@ export function showReceipt(cid) {
   if (!sale) return;
   const id = sale.client_id,
     lines = state.saleLines.filter((l) => l.sale_id == sale.id),
-    html = receiptHtml(state.shop, sale, lines),
+    html = receiptHtml(state.shop, sale, lines, state.customers.find((c) => c.id == sale.customer_id)),
     dlg = $("#dlg");
   dlg.innerHTML = `${html}<div class="row mt"><button class="b" data-act="posPrint" data-id="${E(id)}">${t(
     "pos.print",
@@ -206,7 +223,15 @@ export function showReceipt(cid) {
 
 export function printSale(cid) {
   const sale = find(cid);
-  if (sale) printReceipt(receiptHtml(state.shop, sale, state.saleLines.filter((l) => l.sale_id == sale.id)));
+  if (sale)
+    printReceipt(
+      receiptHtml(
+        state.shop,
+        sale,
+        state.saleLines.filter((l) => l.sale_id == sale.id),
+        state.customers.find((c) => c.id == sale.customer_id),
+      ),
+    );
 }
 
 export async function voidIt(cid) {
@@ -325,6 +350,23 @@ export function refresh() {
   $("#pcharge").disabled =
     noTill() ||
     !st.cart.length || tt.problems > 0 || (st.method == "cash" && tt.paid < tt.total);
+  const who = st.cust && state.customers.find((c) => c.id == st.cust);
+  if (st.cust && !who) st.cust = null; // deleted meanwhile
+  const cb = $("#pcustbox");
+  const custHtml = who
+      ? `<div class="sh">${t("pos.customer")}<span><b>${E(who.name)}</b> <button class="g" data-act="posNoCust" title="${E(
+          t("pos.noCust"),
+        )}">✕</button></span></div>`
+      : `<label>${t("pos.customer")}<span class="tools"><input id="pcust" list="pcustl" data-input="pos" autocomplete="off" placeholder="${E(
+          t("pos.custPh"),
+        )}"><button class="g" data-act="posNewCust" title="${E(t("cust.add"))}">＋</button></span></label><datalist id="pcustl">${state.customers
+          .map((c) => `<option value="${E(custLabel(c))}"></option>`)
+          .join("")}</datalist>`;
+  // Only when it changed, so a half-typed name and the open suggestion list survive.
+  if (cb && cb.dataset.html != custHtml && !cb.contains(document.activeElement)) {
+    cb.innerHTML = custHtml;
+    cb.dataset.html = custHtml;
+  }
   $("#pcount").textContent = st.cart.length ? t("pos.lines", { n: [...tt.need.values()].reduce((a, n) => a + n, 0) }) : "";
   $("#psales").innerHTML = salesHtml();
 }
@@ -338,7 +380,7 @@ export default function pos() {
     t("pos.search"),
   )}" value="${E(st.q)}"><button class="g" data-act="posCam">${t("pos.cam")}</button></div><div id="psug" class="sug"></div><div id="rd"></div></div><div class="card ts"><h3>${t(
     "pos.cart",
-  )}<small id="pcount"></small></h3><div id="cart"></div></div></div><div class="card pay"><div class="sh">${t(
+  )}<small id="pcount"></small></h3><div id="cart"></div></div></div><div class="card pay"><div id="pcustbox"></div><div class="sh">${t(
     "pos.subtotal",
   )}<b id="psub"></b></div><label class="mt">${t("pos.discount")}<input id="pdisc" type="number" min="0" step="any" data-input="pos" value="${E(
     st.discount,

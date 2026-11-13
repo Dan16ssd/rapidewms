@@ -481,5 +481,82 @@ await ok("lookupCode finds a product by its pack's barcode", async () => {
   eq(X.lookupCode(d.items, "CR-1").item, undefined, "not without packs");
 });
 
+console.log("Import from another POS");
+const IM = await import("../src/lib/importer.js");
+const F = await import("../src/data/fields.js");
+await ok("Loyverse item columns are recognised", async () => {
+  const head = ["Handle", "SKU", "Name", "Category", "Sold by weight", "Default price", "Cost", "Barcode", "In stock [Main shop]", "Low stock [Main shop]"],
+    m = IM.guessColumns(head, "products");
+  eq(`${m.sku} ${m.name} ${m.category} ${m.price} ${m.cost} ${m.barcode} ${m.qty} ${m.min_qty} ${m.unit}`, "1 2 3 5 6 7 8 9 -1", "map");
+  eq(IM.guessKind(head), "products", "kind");
+});
+await ok("this app's own Inventory export is recognised", async () => {
+  const head = ["SKU", "Name", "Category", "Barcode", "Qty", "Min", "Cost (LAK)", "Price (LAK)", "Wholesale (LAK)", "Wholesale min", "Value (LAK)", "Kind", "Next expiry", "Unit"],
+    m = IM.guessColumns(head, "products");
+  eq(`${m.qty} ${m.min_qty} ${m.cost} ${m.price} ${m.price_wholesale} ${m.wholesale_min_qty} ${m.kind} ${m.unit}`, "4 5 6 7 8 9 11 13", "map");
+});
+await ok("customer and receipt files are told apart", async () => {
+  eq(IM.guessKind(["Customer name", "Email", "Phone", "Note"]), "customers", "customers");
+  eq(IM.guessKind(["Date", "Receipt number", "Receipt type", "SKU", "Item", "Quantity", "Gross sales"]), "sales", "sales");
+});
+await ok("money and dates as other systems write them", async () => {
+  eq(IM.number("₭12,000"), 12000, "kip");
+  eq(IM.number("฿1,234.50"), 1234.5, "baht");
+  eq(isNaN(IM.number("")), true, "blank");
+  const d = IM.parseDate("14/11/2026 13:05", "dmy");
+  eq(`${d.getDate()}/${d.getMonth() + 1} ${d.getHours()}:${d.getMinutes()}`, "14/11 13:5", "day first");
+  eq(IM.dateOrder(["11/02/26 1:05 PM", "11/14/26 9:00 AM"]), "mdy", "month first seen");
+  const m = IM.parseDate("11/14/26 1:05 PM", "mdy");
+  eq(`${m.getFullYear()} ${m.getMonth() + 1} ${m.getDate()} ${m.getHours()}`, "2026 11 14 13", "US with PM");
+  eq(IM.parseDate("12 AM", "dmy"), null, "not a date");
+  eq(IM.parseDate("31/02/2026", "dmy"), null, "no 31 February");
+});
+await ok("receipt rows become sales; refunds are left out", async () => {
+  const head = ["Date", "Receipt number", "Receipt type", "SKU", "Item", "Quantity", "Gross sales", "Discounts", "Payment type", "Customer name"],
+    rows = [
+      ["05/01/2026 10:00", "1-1001", "Sale", "CAN", "Soda", "3", "27,000", "0", "Cash", "Mr Somchai"],
+      ["05/01/2026 10:00", "1-1001", "Sale", "", "Bread", "1", "5000", "1000", "Cash", ""],
+      ["06/01/2026 11:00", "1-1002", "Refund", "CAN", "Soda", "1", "9000", "0", "Cash", ""],
+      ["07/01/2026 12:00", "1-1003", "Sale", "CAN", "Soda", "2", "18000", "0", "BCEL OnePay", ""],
+    ],
+    { records } = IM.build("sales", rows, IM.guessColumns(head, "sales"));
+  eq(records.map((s) => `${s.ref}:${s.lines.length}:${s.discount}:${s.method}`).join(" "), "1-1001:2:1000:cash 1-1003:1:0:transfer", "sales");
+  eq(`${records[0].lines[0].price} ${records[0].customer.name}`, "9000 Mr Somchai", "price from the line total");
+});
+await ok("a customer list drops what is already here and repeats in the file", async () => {
+  const have = [{ name: "Noy", phone: "020 1" }],
+    list = [{ name: "Noy again", phone: "020 1" }, { name: "Bee" }, { name: "bee" }, { name: "" }, { name: "Kham", phone: "020 2" }];
+  eq(F.newCustomers(list, have).map((c) => c.name).join(","), "Bee,Kham", "fresh");
+});
+await ok("an imported sale is history: no stock moves, a repeat adds nothing (as test-db)", async () => {
+  const d = { ...shopDb(), customers: [], settings: { s: { vat_rate: 10 } } },
+    row = { ref: "R-1", at: "2026-01-05T03:00:00Z", customer: { name: "Mr Somchai", phone: "020 9" }, discount: 1000,
+      lines: [{ sku: "milk", qty: 2, price: 10000 }, { name: "Gone", qty: 1, price: 1000 }] };
+  eq(AP.importSale(d, C0, row, 1), true, "added");
+  eq(AP.importSale(d, C0, row, 2), false, "repeat");
+  const s = d.sales[0];
+  eq(`${s.total} ${s.till} ${s.flags} ${s.client_id} ${d.items[0].qty} ${d.movements.length}`, "20000 IMP imported import:R-1 20 0", "sale");
+  eq(d.sale_lines.map((l) => `${l.item_id || "none"}:${l.sku}`).join(" "), "i1:MILK none:-", "lines");
+  eq(`${d.customers.length} ${s.customer_id == d.customers[0].id}`, "1 true", "customer added");
+  AP.importSale(d, C0, { ...row, ref: "R-2", customer: { phone: "020 9" } }, 3);
+  eq(d.customers.length, 1, "matched by phone");
+});
+await ok("a future date or a bad line stops the import", async () => {
+  const d = { ...shopDb(), customers: [], settings: {} };
+  let n = 0;
+  for (const bad of [{ at: "2099-01-01" }, { lines: [{ sku: "MILK", qty: 0, price: 1 }] }, { discount: 1e9 }])
+    try {
+      AP.importSale(d, C0, { ref: "B", at: "2026-01-01", lines: [{ sku: "MILK", qty: 1, price: 1 }], ...bad }, 1);
+    } catch {
+      n++;
+    }
+  eq(n, 3, "refused");
+});
+await ok("a till sale keeps its customer, or drops one from another shop", async () => {
+  const d = { ...shopDb(), customers: [{ id: "c1", shop_id: "s", name: "A" }, { id: "c2", shop_id: "x", name: "B" }] };
+  eq(AP.sale(d, C0, { client_id: "cs1", paid: 1e9, customer_id: "c1", lines: [{ item_id: "i1", qty: 1 }] }).customer_id, "c1", "mine");
+  eq(AP.sale(d, C0, { client_id: "cs2", paid: 1e9, customer_id: "c2", lines: [{ item_id: "i1", qty: 1 }] }).customer_id, null, "other shop");
+});
+
 console.log(fails ? `\n${fails} FAILED` : "\nAll unit checks passed");
 process.exit(fails ? 1 : 0);
