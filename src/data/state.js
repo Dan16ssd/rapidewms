@@ -16,6 +16,7 @@ export const state = {
   pending: 0, // work done on this device the server doesn't have yet
   failed: [], // queued work the server refused, for the owner to decide
   tills: [], // the shop's devices that sell (A, B, C...), retired ones too
+  people: null, // owner only: { members: [{ user_id, email, role }], invites: [{ code, expires_at }] }
   tillFull: false, // this device could not become a till: the plan's tills are all in use
 };
 

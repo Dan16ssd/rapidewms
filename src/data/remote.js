@@ -38,10 +38,13 @@ function friendly(e) {
   // Chrome, Safari and Firefox word a lost connection differently.
   if (/failed to fetch|load failed|network/i.test(m)) return err("err.offline");
   if (/unknown till/i.test(m)) return err("err.till");
-  const full = /till limit reached: (d+) of (d+)/i.exec(m);
+  const full = /till limit reached: (\d+) of (\d+)/i.exec(m);
   if (full) return err("err.tillFull", { max: full[2] });
   if (/not a till/i.test(m)) return err("err.noTill");
   if (/till retired/i.test(m)) return err("err.tillRetired");
+  if (/invite code not valid/i.test(m)) return err("err.badInvite");
+  if (/already a member/i.test(m)) return err("err.alreadyMember");
+  if (/too many open invites/i.test(m)) return err("err.manyInvites");
   return new Error(m);
 }
 const fail = (code, params) => {
@@ -60,6 +63,8 @@ export async function myShops() {
 }
 
 export const createShop = (name) => must(sb.rpc("create_shop", { p_name: name }));
+/** A cashier joins a shop with the owner's one-time code. */
+export const joinShop = (code) => must(sb.rpc("join_shop", { p_code: code }));
 
 export async function openShop(m) {
   state.shop = m.shops;
@@ -78,7 +83,7 @@ function watch() {
   if (channel) sb.removeChannel(channel);
   const filter = `shop_id=eq.${state.shop.id}`;
   channel = sb.channel("shop-" + state.shop.id);
-  for (const table of ["items", "orders", "movements", "settings", "lots", "sales", "sale_lines", "tills"])
+  for (const table of ["items", "orders", "movements", "settings", "lots", "sales", "sale_lines", "tills", "members"])
     channel.on("postgres_changes", { event: "*", schema: "public", table, filter }, () => {
       clearTimeout(reloadTimer);
       reloadTimer = setTimeout(() => navigator.onLine && reload().catch(() => {}), 300);
@@ -133,8 +138,32 @@ export async function reload() {
   // Kept on the device, so the shop opens with no internet.
   await C.put("snap", id, { ...server, role: state.role, savedAt: state.savedAt }).catch(() => {});
   localStorage["rapidewms.lastShop." + state.user.id] = id;
+  await loadPeople();
   await rebuild();
   await ensureTill();
+}
+
+// Who is in the shop and the unused invite codes: the owner's Staff card.
+async function loadPeople() {
+  state.people = state.role == "owner" ? await rpc("shop_people", { p_shop: state.shop.id }).catch(() => state.people) : null;
+}
+
+/** Owner: a one-time code a cashier types to join this shop. */
+export async function createInvite() {
+  const code = await rpc("create_invite", { p_shop: state.shop.id });
+  await loadPeople();
+  emit();
+  return code;
+}
+export async function cancelInvite(code) {
+  await rpc("cancel_invite", { p_shop: state.shop.id, p_code: code });
+  await loadPeople();
+  emit();
+}
+export async function removeMember(userId) {
+  await rpc("remove_member", { p_shop: state.shop.id, p_user: userId });
+  await loadPeople();
+  emit();
 }
 
 /** Open the last shop this user had, from the copy on this device. */

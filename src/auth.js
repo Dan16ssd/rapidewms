@@ -1,7 +1,7 @@
 // Sign in / sign up / password reset / first-shop screens.
 import { $, E } from "./lib/util.js";
 import { t, errText } from "./i18n/index.js";
-import { sb, configured, createShop, signOut } from "./data/store.js";
+import { sb, configured, createShop, joinShop, signOut } from "./data/store.js";
 
 const shell = (inner) => {
   $("#app").hidden = true;
@@ -108,29 +108,45 @@ export function showNewPassword(onDone) {
   };
 }
 
+// After sign-up: start a new shop, or join one with the code the owner made.
 export function showCreateShop(onDone) {
-  shell(`<form class="card" id="shopf"><h2>${t("auth.nameShop")}</h2><p class="mut">${t(
+  const btn = (k) => `<button class="b" style="width:100%;justify-content:center">${t(k)}</button>`;
+  shell(`${
+    configured
+      ? `<form class="card" id="joinf"><h2>${t("auth.joinTitle")}</h2><p class="mut">${t(
+          "auth.joinNote",
+        )}</p><label>${t(
+          "auth.joinCode",
+        )}<input name="code" required maxlength="20" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD-2345"></label><p class="err" id="jerr"></p>${btn(
+          "auth.join",
+        )}</form>`
+      : ""
+  }<form class="card" id="shopf"><h2>${t(configured ? "auth.orNew" : "auth.nameShop")}</h2><p class="mut">${t(
     "auth.staffLater",
-  )}</p><label>${t(
-    "auth.shopName",
-  )}<input name="name" required maxlength="80"></label><p class="err" id="serr"></p><button class="b" style="width:100%;justify-content:center">${t(
+  )}</p><label>${t("auth.shopName")}<input name="name" required maxlength="80"></label><p class="err" id="serr"></p>${btn(
     "auth.startTrial",
-  )}</button>${
+  )}${
     configured
       ? `<p class="mut"><button type="button" class="switch" id="sout">${t("sys.signOut")}</button></p>`
       : `<p class="mut">${t("auth.localNote")}</p>`
   }</form>`);
-  if (configured) $("#sout").onclick = () => signOut();
-  $("#shopf").onsubmit = async (ev) => {
-    ev.preventDefault();
-    const btn = ev.target.querySelector(".b");
-    btn.disabled = true;
-    try {
-      await createShop(new FormData(ev.target).get("name"));
-      onDone();
-    } catch (e) {
-      $("#serr").textContent = errText(e);
-      btn.disabled = false;
-    }
-  };
+  const go = (id, errId, fn) =>
+    ($(id).onsubmit = async (ev) => {
+      ev.preventDefault();
+      const b = ev.target.querySelector(".b");
+      b.disabled = true;
+      $(errId).textContent = "";
+      try {
+        await fn(new FormData(ev.target));
+        onDone();
+      } catch (e) {
+        $(errId).textContent = errText(e);
+        b.disabled = false;
+      }
+    });
+  if (configured) {
+    $("#sout").onclick = () => signOut();
+    go("#joinf", "#jerr", (f) => joinShop(f.get("code")));
+  }
+  go("#shopf", "#serr", (f) => createShop(f.get("name")));
 }

@@ -188,6 +188,8 @@ update shops set plan = 'paid', plan_until = now() + interval '1 month', max_til
 
 **Till limit (`004_till_limit.sql`).** Only a device registered as a till can sell; the server refuses a sale from no till or a retired one, and refuses to register more tills than `max_tills`. A device past the limit still opens the shop to look at stock and reports, and the till screen says why it cannot sell. The owner retires a lost or replaced phone in Shop & backup to free its place; its letter is never reused, so receipt numbers can't repeat, and sales it made offline before it was retired are still accepted. A retired device doesn't take its place back by itself: someone has to tap “Use this device as a till” on it. Covered by 12 database checks.
 
+**Staff (`005_staff.sql`).** Each cashier has their own login. The owner taps “Add a cashier” in Shop & backup and gets a one-time code (8 characters, 24 hours, at most 10 open per shop). The cashier creates an account and, on the screen that would otherwise create a shop, types the code under “Join a shop”; they join as staff. The owner's Staff card lists everyone with their email and can cancel codes or remove a cashier (whose till is then retired separately). The `invites` table is reachable only through the functions. Covered by 15 database checks.
+
 ---
 
 ## 8. Decisions
@@ -256,7 +258,7 @@ The full written plan is kept outside the repo; this table is the summary.
 
 ## 10. Next steps
 
-1. **Run `003_offline.sql` and then `004_till_limit.sql` on the Supabase project** (002 is already applied), then set each shop's `max_tills` to its plan and test with two phones: airplane mode on both, sell, reconnect, and compare with the cash count.
+1. **Run `003_offline.sql`, `004_till_limit.sql` and `005_staff.sql` on the Supabase project** (002 is already applied), then set each shop's `max_tills` to its plan and test with two phones: airplane mode on both, sell, reconnect, and compare with the cash count.
 2. **Phone test in a real shop:** scan real products at odd angles, read real expiry labels, and time the product identify on a cheap Android. The numbers in section 5 are from a PC.
 3. **Still to build for the till:** customers and credit sales, shifts with cash count, refunds of part of a sale, Bluetooth thermal printing.
 4. **Shared team testing:** create the Supabase project (section 3) so the team works on the same stock.

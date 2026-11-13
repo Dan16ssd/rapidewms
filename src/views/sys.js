@@ -1,5 +1,5 @@
 import { E } from "../lib/util.js";
-import { t, tn, lang, LANGS, fDate } from "../i18n/index.js";
+import { t, tn, lang, LANGS, fDate, fDateTime } from "../i18n/index.js";
 import { isOwner, configured, myTill, canWrite } from "../data/store.js";
 
 // The devices that sell. The plan sets how many can be in use; the owner
@@ -24,6 +24,31 @@ function tills(s) {
   }</div>`;
 }
 
+// Owner only: who can log in to this shop, and codes for new cashiers.
+const showCode = (c) => c.slice(0, 4) + "-" + c.slice(4);
+function staff(s) {
+  if (!configured || !isOwner() || !s.people) return "";
+  const people = s.people.members
+    .map(
+      (m) =>
+        `<div class="row mt"><b>${E(m.email || "")}</b><span class="tag">${t(m.role == "owner" ? "role.owner" : "role.staff")}</span>${
+          m.user_id == s.user.id ? `<span class="mut">${t("sys.you")}</span>` : ""
+        }${m.role == "staff" ? `<button class="g" data-act="removeStaff" data-id="${E(m.user_id)}" data-email="${E(m.email || "")}">${t("sys.remove")}</button>` : ""}</div>`,
+    )
+    .join("");
+  const codes = s.people.invites
+    .map(
+      (i) =>
+        `<div class="row mt"><b class="code">${E(showCode(i.code))}</b><span class="mut">${t("sys.codeUntil", {
+          d: fDateTime(new Date(i.expires_at)),
+        })}</span><button class="g" data-act="cancelInvite" data-code="${E(i.code)}">${t("sys.cancel")}</button></div>`,
+    )
+    .join("");
+  return `<div class="card"><h3>${t("sys.staff")}</h3><p class="mut">${t("sys.staffNote")}</p>${people}${
+    codes ? `<p class="mut mt">${t("sys.codesOpen")}</p>${codes}` : ""
+  }<div class="row mt"><button class="g" data-act="addStaff">${t("sys.addStaff")}</button></div></div>`;
+}
+
 export default function sys(s) {
   const until = new Date(s.shop.plan_until),
     days = Math.ceil((until - Date.now()) / 864e5),
@@ -39,7 +64,7 @@ export default function sys(s) {
     configured
       ? `<div class="row mt"><button class="g" data-act="signOut">${t("sys.signOut")}</button></div>`
       : `<p class="mut mt">${t("sys.localNote")}</p>`
-  }</div>${tills(s)}
+  }</div>${staff(s)}${tills(s)}
 <div class="card"><h3>${t("sys.lang")}</h3><div class="row mt"><select data-input="lang">${LANGS.map(
     ([c, n]) => `<option value="${c}" ${c == lang() ? "selected" : ""}>${n}</option>`,
   ).join("")}</select></div></div>

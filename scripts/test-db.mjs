@@ -435,6 +435,58 @@ await ok("a bigger plan allows more tills", async () => {
   eq((await one(C, "select register_till($1, 'PC') c", [shopB])).c, "D", "code");
 });
 
+console.log("Staff invites");
+// D is a new cashier with no shop. A owns shop A; C is staff in shop B.
+const D = "00000000-0000-0000-0000-00000000000d";
+await db.exec(`insert into auth.users values ('${D}', 'cashier@example.com')`);
+let code;
+await ok("the owner makes an 8-character code", async () => {
+  code = (await one(A, "select create_invite($1) c", [shopA])).c;
+  if (!/^[A-HJKMNP-Z2-9]{8}$/.test(code)) throw new Error("bad code " + code);
+});
+await rejects("staff cannot make a code", () => as(C, "select create_invite($1)", [shopB]));
+await rejects("another shop cannot make a code for my shop", () => as(B, "select create_invite($1)", [shopA]));
+await rejects("the invites table can't be read directly", () => as(A, "select * from invites"));
+await rejects("a wrong code joins nothing", () => as(D, "select join_shop('ABCD-EFGH')"));
+await ok("the cashier joins as staff (dash and small letters forgiven)", async () => {
+  const typed = (code.slice(0, 4) + "-" + code.slice(4)).toLowerCase();
+  eq((await one(D, "select join_shop($1) s", [typed])).s, shopA, "shop");
+  eq((await one(D, "select role from members where shop_id = $1 and user_id = $2", [shopA, D])).role, "staff", "role");
+  eq((await one(D, "select count(*) n from items")).n, 1, "sees the shop's products");
+});
+await rejects("a code works only once", async () => {
+  await db.exec(`insert into auth.users values ('00000000-0000-0000-0000-0000000000e1')`);
+  return as("00000000-0000-0000-0000-0000000000e1", "select join_shop($1)", [code]);
+});
+await rejects("the new staff member cannot delete products", async () => {
+  const r = await as(D, "delete from items where shop_id = $1", [shopA]);
+  if (!r.affectedRows) throw new Error("nothing deleted");
+});
+await rejects("an expired code is refused", async () => {
+  const c2 = (await one(A, "select create_invite($1) c", [shopA])).c;
+  await db.exec(`update invites set expires_at = now() - interval '1 minute' where code = '${c2}'`);
+  return as("00000000-0000-0000-0000-0000000000e1", "select join_shop($1)", [c2]);
+});
+await ok("the owner sees staff with emails and the open codes", async () => {
+  const c3 = (await one(A, "select create_invite($1) c", [shopA])).c;
+  const p = (await one(A, "select shop_people($1) p", [shopA])).p;
+  eq(p.members.length, 2, "members");
+  eq(p.members.find((m) => m.role == "staff").email, "cashier@example.com", "email");
+  eq(p.invites.map((i) => i.code).join(), c3, "only the open code");
+  await as(A, "select cancel_invite($1, $2)", [shopA, c3]);
+  eq((await one(A, "select shop_people($1) p", [shopA])).p.invites.length, 0, "cancelled");
+});
+await rejects("staff cannot see the staff list", () => as(D, "select shop_people($1)", [shopA]));
+await rejects("at most 10 open codes", async () => {
+  for (let i = 0; i < 11; i++) await as(A, "select create_invite($1)", [shopA]);
+});
+await rejects("the owner cannot be removed", () => as(A, "select remove_member($1, $2)", [shopA, A]));
+await rejects("staff cannot remove staff", () => as(D, "select remove_member($1, $2)", [shopA, D]));
+await ok("the owner removes a cashier, who then sees nothing", async () => {
+  await as(A, "select remove_member($1, $2)", [shopA, D]);
+  eq((await one(D, "select count(*) n from items")).n, 0, "rows");
+});
+
 console.log("Billing");
 await rejects("owner cannot extend own plan", () =>
   as(A, "update shops set plan_until = now() + interval '10 years' where id = $1", [shopA]));

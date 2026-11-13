@@ -792,3 +792,10 @@ table.cart td {
     margin: 4mm;
   }
 }
+
+/* An invite code the owner reads out to a cashier. */
+.code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 1.25em;
+  letter-spacing: 0.08em;
+}

@@ -41,6 +41,11 @@ export const openCached = async () => false;
 export const myTill = () => null;
 export const registerTill = async () => {};
 export const retireTill = async () => {};
+// Staff need accounts, so invites exist only with Supabase.
+export const joinShop = async () => fail("err.noPerm");
+export const createInvite = async () => fail("err.noPerm");
+export const cancelInvite = async () => {};
+export const removeMember = async () => {};
 export const retryFailed = async () => {};
 export const discardFailed = async () => {};
 

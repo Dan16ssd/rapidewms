@@ -376,6 +376,19 @@ const A = {
     await store.retireTill(code);
     toast(t("msg.tillRetired", { code }));
   },
+  // ---- staff ----
+  async addStaff() {
+    const code = await store.createInvite();
+    toast(t("msg.codeMade", { code: code.slice(0, 4) + "-" + code.slice(4) }));
+  },
+  async cancelInvite(el) {
+    await store.cancelInvite(el.dataset.code);
+  },
+  async removeStaff(el) {
+    if (!confirm(t("ask.removeStaff", { email: el.dataset.email }))) return;
+    await store.removeMember(el.dataset.id);
+    toast(t("msg.staffRemoved", { email: el.dataset.email }));
+  },
   async registerTill() {
     await store.registerTill();
     if (store.myTill()) toast(t("sys.till", { code: store.myTill().code }));

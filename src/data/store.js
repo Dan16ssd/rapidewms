@@ -32,6 +32,10 @@ export const {
   myTill,
   registerTill,
   retireTill,
+  joinShop,
+  createInvite,
+  cancelInvite,
+  removeMember,
   retryFailed,
   discardFailed,
 } = B;
