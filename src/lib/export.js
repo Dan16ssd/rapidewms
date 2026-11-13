@@ -35,6 +35,7 @@ export const sets = (s) => {
         // Appended, never inserted: older exports must still import.
         "Kind",
         "Next expiry",
+        "Unit",
       ],
       ...s.items.map((i) => [
         i.sku,
@@ -50,10 +51,13 @@ export const sets = (s) => {
         i.qty * i.cost,
         i.kind == "consumable" ? "consumable" : "durable",
         next.get(i.id) || "",
+        i.unit || "",
       ]),
     ],
     Sales: [
-      ["Date", "Receipt", "SKU", "Name", "Qty", "Unit price (LAK)", "Wholesale", "Line total (LAK)", "Method", "Status"],
+      // Pack and VAT appended, never inserted. VAT is the sale's VAT shared out
+      // over its lines, so a sale's lines add up to its VAT.
+      ["Date", "Receipt", "SKU", "Name", "Qty", "Unit price (LAK)", "Wholesale", "Line total (LAK)", "Method", "Status", "Pack", "VAT (LAK)"],
       ...(s.saleLines || [])
         .filter((l) => sale.has(l.sale_id))
         .map((l) => {
@@ -69,6 +73,8 @@ export const sets = (s) => {
             +l.line_total,
             x.method,
             x.status,
+            l.pack_qty ? `${+l.pack_qty} × ${l.pack_name} (${+l.pack_size})` : "",
+            +x.subtotal ? Math.round(((+x.vat || 0) * l.line_total * 100) / x.subtotal) / 100 : 0,
           ];
         }),
     ],
@@ -125,6 +131,9 @@ const HEAD = {
   Type: "type",
   Party: "party",
   Note: "note",
+  Unit: "unit",
+  Pack: "pack",
+  "VAT (LAK)": "vat",
 };
 // Type and status words in the cells.
 const WORD = {
@@ -236,6 +245,7 @@ export async function exportZip(s) {
       {
         shop: s.shop,
         items: s.items,
+        packs: s.packs,
         lots: s.lots,
         orders: s.orders,
         movements: s.movements,

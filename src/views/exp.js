@@ -2,6 +2,7 @@
 // the few products the list points at instead of every shelf.
 import { E, num, fmt, dateText } from "../lib/util.js";
 import { t, tn } from "../i18n/index.js";
+import { isOwner } from "../data/store.js";
 import { daysLeft, status, SOON_DAYS } from "../lib/expiry.js";
 
 const COLS = ["th.sku", "th.name", "th.expiry", "th.left", "th.qty", "th.value"];
@@ -23,11 +24,17 @@ export default function exp(s) {
     const it = byId.get(lot.item_id),
       d = daysLeft(lot.expiry),
       st = status(lot.expiry);
-    return `<tr>${td(0, `<b>${E(it.sku)}</b>`)}${td(1, E(it.name))}${td(2, dateText(lot.expiry), st == "ok" ? "" : "warn")}${td(
+    // A batch close to its date can sell for less (the till offers that price).
+    const cut = lot.price != null ? ` <span class="tag warn">${t("exp.priceTag", { p: fmt(lot.price) })}</span>` : "",
+      priceBtn =
+        isOwner() && st != "ok"
+          ? `<button class="g" data-act="lotPrice" data-item="${E(lot.item_id)}" data-exp="${E(lot.expiry)}">${t("exp.setPrice")}</button> `
+          : "";
+    return `<tr>${td(0, `<b>${E(it.sku)}</b>`)}${td(1, E(it.name) + cut)}${td(2, dateText(lot.expiry), st == "ok" ? "" : "warn")}${td(
       3,
       d < 0 ? t("exp.agoN", { n: -d }) : d == 0 ? t("exp.today") : t("exp.inN", { n: d }),
       st == "expired" ? "bad" : st == "soon" ? "warn" : "",
-    )}${td(4, num(lot.qty))}${td(5, fmt(lot.qty * it.cost))}<td class="act"><button class="g" data-act="writeOff" data-id="${E(
+    )}${td(4, num(lot.qty))}${td(5, fmt(lot.qty * it.cost))}<td class="act">${priceBtn}<button class="g" data-act="writeOff" data-id="${E(
       lot.id,
     )}">${t("exp.writeOff")}</button></td></tr>`;
   };
@@ -35,7 +42,29 @@ export default function exp(s) {
     `<table class="rt"><thead><tr>${COLS.map((k) => `<th>${t(k)}</th>`).join("")}<th></th></tr></thead><tbody>${
       list.length ? list.map(row).join("") : `<tr><td colspan="7" class="mut">${empty}</td></tr>`
     }</tbody></table>`;
-  return `<div class="stats">${[
+  // "Soon" split into within a week, a month and two months, as far as the
+  // shop's warning reaches (settings.expiry_days).
+  const bands = (list) => {
+    const out = [];
+    let from = -1;
+    for (const n of [7, 30, 60]) {
+      if (from >= SOON_DAYS) break;
+      const to = Math.min(n, SOON_DAYS);
+      out.push([t("exp.band." + n), list.filter((x) => daysLeft(x.expiry) > from && daysLeft(x.expiry) <= to)]);
+      from = to;
+    }
+    return out;
+  };
+  const warn = `<div class="card"><div class="row"><b style="flex:1 1 200px">${t("exp.warnMe")}</b><select data-input="setting" data-key="expiry_days" data-num="1"${
+    isOwner() ? "" : " disabled"
+  }>${[7, 30, 60]
+    .map((n) => `<option value="${n}"${n == SOON_DAYS ? " selected" : ""}>${t("exp.before." + n)}</option>`)
+    .join("")}</select>${
+    "Notification" in window && Notification.permission != "granted"
+      ? `<button class="g" data-act="allowNotes">${t("exp.allowNotes")}</button>`
+      : ""
+  }</div></div>`;
+  return `${warn}<div class="stats">${[
     ["exp.expired", expired, "bad"],
     ["exp.soon", soon, "warn"],
     ["exp.dated", lots, "in"],
@@ -48,7 +77,9 @@ export default function exp(s) {
     )
     .join("")}</div>
 <div class="card ts"><h3>${t("exp.listExpired")}</h3>${table(expired, t("exp.noneExpired"))}</div>
-<div class="card ts"><h3>${t("exp.listSoon", { n: SOON_DAYS })}</h3>${table(soon, t("exp.noneSoon"))}</div>
+${bands(soon)
+    .map(([h, L]) => `<div class="card ts"><h3>${h}</h3>${table(L, t("exp.noneSoon"))}</div>`)
+    .join("")}
 <div class="card ts"><h3>${t("exp.listAll")}</h3>${table(
     lots.filter((x) => status(x.expiry) == "ok"),
     t("exp.noneDated"),

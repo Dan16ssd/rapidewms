@@ -66,9 +66,11 @@ export async function onScan(c, format) {
   last = c;
   lt = n;
   navigator.vibrate?.(90);
-  const { item: it, code, expiry: printed } = lookupCode(state.items, c),
+  const { item: it, pack, code, expiry: printed } = lookupCode(state.items, c, state.packs),
     m = $("#mode").value,
-    q = Math.max(1, +$("#sq").value || 1);
+    // A carton's barcode moves the carton's worth of units.
+    q = Math.max(1, +$("#sq").value || 1) * (pack ? +pack.size : 1),
+    packTag = pack ? `<span class="tag">${E(pack.name)} × ${+pack.size}</span> ` : "";
   // A QR that is no product is usually a link or a payment slip: show it, don't offer to add it.
   if (!it && camera.isQr(format))
     return log(`${kindTag(format)}<span class="mut">${t("scan.qrText", { text: `<b>${E(c.slice(0, 120))}</b>` })}</span>`);
@@ -104,7 +106,7 @@ export async function onScan(c, format) {
     await adjust(it.id, m == "in" ? q : -q, "scan", expiry);
     const now = state.items.find((i) => i.id == it.id);
     log(
-      `${kindTag(format)}<span class="${m}">${t("scan.ok", {
+      `${kindTag(format)}${packTag}<span class="${m}">${t("scan.ok", {
         name: E(it.name),
         sku: E(it.sku),
         sign: m == "in" ? "+" : "−",

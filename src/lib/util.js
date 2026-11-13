@@ -1,5 +1,6 @@
 import { t, locale, fDateTime, fDateLong } from "../i18n/index.js";
 import { parseTyped, slashDigits, daysLeft, status, SOON_DAYS } from "./expiry.js";
+import { SIGN, kipPer } from "./rates.js";
 
 // HTML-escape any value before putting it into markup or an attribute.
 export const E = (s) =>
@@ -14,6 +15,12 @@ export const fmt = (n) =>
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   });
+
+/** A Kip amount shown in another currency at the shop's rate (lib/rates.js). */
+export const fmtIn = (kip, cur) =>
+  cur == "LAK" || !cur
+    ? fmt(kip)
+    : SIGN[cur] + ((+kip || 0) / kipPer(cur)).toLocaleString(locale(), { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
 export const dt = (t) => (t ? fDateTime(t) : "");
 

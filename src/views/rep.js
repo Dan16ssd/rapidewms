@@ -2,11 +2,7 @@ import { E } from "../lib/util.js";
 import { t, locale, fDateTime } from "../i18n/index.js";
 import { SETS } from "../lib/export.js";
 
-const CUR = ["LAK", "THB", "USD", "CNY"];
-export const R = { USD: 1, LAK: 21700, THB: 35, CNY: 7.1 };
-try {
-  Object.assign(R, JSON.parse(localStorage.rates));
-} catch {}
+import { CUR, kipPer, fetchRates } from "../lib/rates.js";
 
 const opts = (sel) => CUR.map((c) => `<option ${c == sel ? "selected" : ""}>${c}</option>`).join("");
 
@@ -14,7 +10,7 @@ export function conv() {
   const a = +document.querySelector("#c_a").value || 0,
     f = document.querySelector("#c_f").value,
     tc = document.querySelector("#c_t").value,
-    v = (a / R[f]) * R[tc];
+    v = (a * kipPer(f)) / kipPer(tc);
   // One kip is a few hundred-thousandths of a dollar, so two decimal places
   // would print the default view of this converter as "1 LAK = 0 USD" and look
   // broken. Below one unit, show significant digits instead.
@@ -28,15 +24,10 @@ export async function refreshRates() {
     const e = document.querySelector("#c_m");
     if (e) e.textContent = s;
   };
-  try {
-    const j = await (await fetch("https://open.er-api.com/v6/latest/USD")).json();
-    ["LAK", "THB", "CNY"].forEach((c) => (R[c] = j.rates[c]));
-    localStorage.rates = JSON.stringify(R);
+  if (await fetchRates()) {
     m(t("rep.updated", { t: fDateTime(new Date()) }));
     if (document.querySelector("#c_r")) conv();
-  } catch {
-    m(t("rep.offlineRates"));
-  }
+  } else m(t("rep.offlineRates"));
 }
 
 export default function rep(s) {
@@ -60,7 +51,7 @@ export default function rep(s) {
   )}</select><select id="c_t" data-input="conv">${opts(
     "USD",
   )}</select></div><h2 id="c_r" class="mt"></h2><p class="mut mt">${t("rep.stockValue", {
-    v: E(CUR.map((c) => c + " " + Math.round((val / R.LAK) * R[c]).toLocaleString(locale())).join(" · ")),
+    v: E(CUR.map((c) => c + " " + Math.round(val / kipPer(c)).toLocaleString(locale())).join(" · ")),
   })}</p><button class="g mt" data-act="rates">${t(
     "rep.refresh",
   )}</button> <span class="mut" id="c_m"></span></div>`;

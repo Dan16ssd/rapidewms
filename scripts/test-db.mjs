@@ -435,6 +435,68 @@ await ok("a bigger plan allows more tills", async () => {
   eq((await one(C, "select register_till($1, 'PC') c", [shopB])).c, "D", "code");
 });
 
+console.log("Packs, expiring price, VAT");
+// Shop B now sells from till C (the till-limit checks above registered it).
+const sellC = (cid, lines, user = B) =>
+  one(user, "select create_sale($1, $2, $3::jsonb, 0, 'cash', 1e9, null, 'C') id", [shopB, cid, JSON.stringify(lines)]);
+const can = (
+  await one(B, "insert into items (shop_id, sku, name, unit, price, kind) values ($1, 'CAN', 'Soda', 'can', 10000, 'consumable') returning id", [shopB])
+).id;
+await as(B, "select adjust_stock($1, 30, 'in', '2099-01-01')", [can]);
+await as(B, "select adjust_stock($1, 20, 'in', '2099-06-01')", [can]);
+let carton;
+await ok("the owner adds a carton of 24", async () => {
+  carton = (
+    await one(B, "insert into packs (shop_id, item_id, name, size, barcode, price) values ($1, $2, 'Carton', 24, 'CTN-1', 210000) returning id", [shopB, can])
+  ).id;
+});
+await rejects("staff cannot add a pack", () =>
+  as(C, "insert into packs (shop_id, item_id, name, size, price) values ($1, $2, 'Box', 6, 1)", [shopB, can]));
+await rejects("a pack can't hold 1 or fewer", () =>
+  as(B, "insert into packs (shop_id, item_id, name, size, price) values ($1, $2, 'One', 1, 1)", [shopB, can]));
+await rejects("two packs can't share a barcode", () =>
+  as(B, "insert into packs (shop_id, item_id, name, size, barcode, price) values ($1, $2, 'Tray', 6, 'CTN-1', 1)", [shopB, can]));
+await ok("another shop can't see the packs", async () =>
+  eq((await one(A, "select count(*) n from packs")).n, 0, "rows"));
+await rejects("another shop can't add a pack to my product", () =>
+  as(A, "insert into packs (shop_id, item_id, name, size, price) values ($1, $2, 'Box', 6, 1)", [shopA, can]));
+await ok("selling a carton takes 24 cans at the carton price", async () => {
+  const id = (await sellC("pack-sale-1", [{ item_id: can, qty: 1, pack_id: carton }], C)).id;
+  eq(await qtyOf(can), 26, "cans left");
+  const l = await one(B, "select qty, pack_qty, pack_name, line_total, unit_price from sale_lines where sale_id = $1", [id]);
+  eq(`${+l.qty} ${+l.pack_qty} ${l.pack_name} ${+l.line_total}`, "24 1 Carton 210000", "line");
+  eq(await lotsOf(can), "2099-01-01:6 2099-06-01:20", "oldest batch first");
+});
+await ok("VAT inside the price: 10% of 210,000 is 19,090.91", async () => {
+  const s = await one(B, "select vat, vat_rate from sales where client_id = 'pack-sale-1'");
+  eq(`${+s.vat} ${+s.vat_rate}`, "19090.91 10", "vat");
+});
+await rejects("staff cannot set an expiring price", () => as(C, "select set_lot_price($1, '2099-06-01', 6000)", [can]));
+await rejects("another shop cannot set my price", () => as(A, "select set_lot_price($1, '2099-06-01', 6000)", [can]));
+await ok("an expiring price sells that batch first, at that price", async () => {
+  await as(B, "select set_lot_price($1, '2099-06-01', 6000)", [can]);
+  const id = (await sellC("exp-sale-1", [{ item_id: can, qty: 2, expiry: "2099-06-01" }], C)).id;
+  eq((await one(B, "select total from sales where id = $1", [id])).total, 12000, "total");
+  eq(await lotsOf(can), "2099-01-01:6 2099-06-01:18", "that batch");
+});
+await ok("a normal line still sells at the normal price", async () => {
+  const id = (await sellC("plain-sale-1", [{ item_id: can, qty: 1 }], C)).id;
+  eq((await one(B, "select total from sales where id = $1", [id])).total, 10000, "total");
+});
+await rejects("staff cannot change the VAT rate", async () => {
+  const r = await as(C, "update settings set vat_rate = 0 where shop_id = $1", [shopB]);
+  if (!r.affectedRows) throw new Error("no change");
+});
+await ok("VAT 0: the sale carries none", async () => {
+  await as(B, "update settings set vat_rate = 0 where shop_id = $1", [shopB]);
+  await sellC("novat-sale-1", [{ item_id: can, qty: 1 }]);
+  eq(+(await one(B, "select vat from sales where client_id = 'novat-sale-1'")).vat, 0, "vat");
+});
+await rejects("a pack from another product is refused", async () => {
+  await sellC("bad-pack-1", [{ item_id: tea, qty: 1, pack_id: carton }]);
+});
+await ok("stock still equals its movements", balanced);
+
 console.log("Staff invites");
 // D is a new cashier with no shop. A owns shop A; C is staff in shop B.
 const D = "00000000-0000-0000-0000-00000000000d";

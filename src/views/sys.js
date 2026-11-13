@@ -1,6 +1,7 @@
 import { E } from "../lib/util.js";
 import { t, tn, lang, LANGS, fDate, fDateTime } from "../i18n/index.js";
 import { isOwner, configured, myTill, canWrite } from "../data/store.js";
+import { marketKipPer } from "../lib/rates.js";
 
 // The devices that sell. The plan sets how many can be in use; the owner
 // retires an old phone to make room for a new one.
@@ -49,6 +50,24 @@ function staff(s) {
   }<div class="row mt"><button class="g" data-act="addStaff">${t("sys.addStaff")}</button></div></div>`;
 }
 
+// VAT inside the shelf price, and the shop's exchange rates (Kip per 1 unit),
+// used for costs typed in another currency and the dashboard. An empty rate
+// means "use today's internet rate", shown as the placeholder.
+function prices(s) {
+  const own = !isOwner() ? " disabled" : "",
+    rates = s.settings.rates || {};
+  return `<div class="card"><h3>${t("sys.prices")}</h3><label class="mt">${t("sys.vatRate")}<input type="number" min="0" max="100" step="any" data-input="setting" data-key="vat_rate" data-num="1" value="${E(
+    s.settings.vat_rate ?? 10,
+  )}"${own}></label><p class="mut">${t("sys.vatNote")}</p><p class="mt"><b>${t("sys.rates")}</b></p><div class="row">${["THB", "USD", "CNY"]
+    .map(
+      (c) =>
+        `<label style="flex:1 1 140px">1 ${c} = (₭)<input type="number" min="0" step="any" data-input="setting" data-key="rates" data-cur="${c}" value="${E(
+          rates[c] ?? "",
+        )}" placeholder="${E(marketKipPer(c))}"${own}></label>`,
+    )
+    .join("")}</div><p class="mut">${t("sys.ratesNote")}</p></div>`;
+}
+
 export default function sys(s) {
   const until = new Date(s.shop.plan_until),
     days = Math.ceil((until - Date.now()) / 864e5),
@@ -64,7 +83,7 @@ export default function sys(s) {
     configured
       ? `<div class="row mt"><button class="g" data-act="signOut">${t("sys.signOut")}</button></div>`
       : `<p class="mut mt">${t("sys.localNote")}</p>`
-  }</div>${staff(s)}${tills(s)}
+  }</div>${prices(s)}${staff(s)}${tills(s)}
 <div class="card"><h3>${t("sys.lang")}</h3><div class="row mt"><select data-input="lang">${LANGS.map(
     ([c, n]) => `<option value="${c}" ${c == lang() ? "selected" : ""}>${n}</option>`,
   ).join("")}</select></div></div>

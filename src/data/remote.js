@@ -8,6 +8,7 @@ import { pageAll } from "./page.js";
 import * as apply from "./apply.js";
 import * as Q from "./queue.js";
 import * as C from "./cache.js";
+import { costFields, packRow } from "./fields.js";
 
 const url = import.meta.env.VITE_SUPABASE_URL,
   key = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -23,6 +24,7 @@ function friendly(e) {
     stock = /not enough stock:\s*(.+?) has (\S+)/i.exec(m);
   if (stock) return err("err.stock", { sku: stock[1], qty: stock[2] });
   if (/not enough stock/i.test(m)) return err("err.stock", { sku: "", qty: "" });
+  if (/packs_shop_barcode_uidx/i.test(m)) return err("err.packBarcode");
   if (/items_shop_sku_uidx|duplicate key/i.test(m)) return err("err.dupSku");
   if (/read-only|row-level security|permission denied/i.test(m))
     return err(canWrite() ? "err.noPerm" : "err.readonly");
@@ -43,6 +45,8 @@ function friendly(e) {
   if (/not a till/i.test(m)) return err("err.noTill");
   if (/till retired/i.test(m)) return err("err.tillRetired");
   if (/invite code not valid/i.test(m)) return err("err.badInvite");
+  if (/packs_shop_barcode_uidx/i.test(m)) return err("err.packBarcode");
+  if (/pack not found/i.test(m)) return err("err.packNotFound");
   if (/already a member/i.test(m)) return err("err.alreadyMember");
   if (/too many open invites/i.test(m)) return err("err.manyInvites");
   return new Error(m);
@@ -83,7 +87,7 @@ function watch() {
   if (channel) sb.removeChannel(channel);
   const filter = `shop_id=eq.${state.shop.id}`;
   channel = sb.channel("shop-" + state.shop.id);
-  for (const table of ["items", "orders", "movements", "settings", "lots", "sales", "sale_lines", "tills", "members"])
+  for (const table of ["items", "orders", "movements", "settings", "lots", "sales", "sale_lines", "tills", "members", "packs"])
     channel.on("postgres_changes", { event: "*", schema: "public", table, filter }, () => {
       clearTimeout(reloadTimer);
       reloadTimer = setTimeout(() => navigator.onLine && reload().catch(() => {}), 300);
@@ -105,7 +109,7 @@ export async function reload() {
   const id = state.shop.id,
     since = new Date(Date.now() - 30 * 864e5).toISOString(),
     sel = (table) => sb.from(table).select("*", { count: "exact" }).eq("shop_id", id);
-  const [items, orders, movements, settings, shop, lots, sales, saleLines, tills] = await Promise.all([
+  const [items, orders, movements, settings, shop, lots, sales, saleLines, tills, packs] = await Promise.all([
     all(() => sel("items").order("sku")),
     // created_at alone is not unique, so id breaks ties and keeps paging stable.
     all(() => sel("orders").order("created_at", { ascending: false }).order("id"), CAP.orders),
@@ -120,6 +124,7 @@ export async function reload() {
     all(() => sel("sales").gte("created_at", since).order("created_at", { ascending: false }).order("id"), CAP.sales),
     all(() => sel("sale_lines").gte("created_at", since).order("created_at", { ascending: false }).order("id"), CAP.saleLines),
     all(() => sel("tills").order("created_at").order("id")),
+    all(() => sel("packs").order("created_at").order("id")),
   ]);
   server = {
     items: items.rows,
@@ -130,6 +135,7 @@ export async function reload() {
     sales: sales.rows,
     saleLines: saleLines.rows,
     tills: tills.rows,
+    packs: packs.rows,
     settings: settings || state.settings,
     truncated: [items, orders, movements, sales, saleLines].some((r) => r.rows.length < r.total),
   };
@@ -199,6 +205,7 @@ export async function saveItem(id, f) {
     price: +f.price || 0,
     price_wholesale: +f.price_wholesale || 0,
     wholesale_min_qty: +f.wholesale_min_qty || 0,
+    ...costFields(f),
   };
   let itemId = id;
   if (id) await must(sb.from("items").update({ ...row, updated_at: new Date().toISOString() }).eq("id", id));
@@ -241,7 +248,11 @@ export async function createSale({ client_id, lines, discount = 0, method = "cas
       client_id,
       lines: lines.map((l) => {
         const it = state.items.find((i) => i.id == l.item_id);
-        return { item_id: l.item_id, qty: l.qty, price: it ? apply.linePrice(it, l.qty).price : null };
+        let price = null;
+        try {
+          price = it ? apply.priceOf(state, it, l).price : null;
+        } catch {}
+        return { item_id: l.item_id, qty: l.qty, pack_id: l.pack_id || null, expiry: l.expiry || null, price };
       }),
       discount,
       method,
@@ -339,6 +350,7 @@ async function rebuild() {
     sales: s.sales,
     saleLines: s.saleLines,
     tills: s.tills || [],
+    packs: s.packs || [],
     shop: s.shop,
     truncated: s.truncated,
   });
@@ -346,6 +358,7 @@ async function rebuild() {
   const queue = await Q.pending(state.shop.id),
     db = {
       items: state.items,
+      packs: state.packs,
       lots: state.lots,
       movements: state.movements,
       sales: state.sales,
@@ -505,3 +518,16 @@ export const setSetting = (k, v) =>
   );
 
 export const eraseAll = () => write(sb.rpc("erase_shop_data", { p_shop: state.shop.id }));
+
+// ---------- packs and expiring prices (owner, online) ----------
+
+/** Add or change a pack of a product: { name, size, barcode, price }. */
+export async function savePack(id, itemId, f) {
+  const row = packRow(f);
+  if (id) await write(sb.from("packs").update(row).eq("id", id));
+  else await write(sb.from("packs").insert({ ...row, item_id: itemId, shop_id: state.shop.id }));
+}
+export const deletePack = (id) => write(sb.from("packs").delete().eq("id", id));
+/** A lower price for one expiry date of a product; null goes back to normal. */
+export const setLotPrice = (itemId, expiry, price) =>
+  write(sb.rpc("set_lot_price", { p_item: itemId, p_expiry: expiry, p_price: price }));

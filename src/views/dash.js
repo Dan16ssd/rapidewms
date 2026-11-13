@@ -1,4 +1,5 @@
-import { E, fmt, num } from "../lib/util.js";
+import { E, fmt, fmtIn, num } from "../lib/util.js";
+import { CUR, SIGN } from "../lib/rates.js";
 import { t, tn } from "../i18n/index.js";
 import { status } from "../lib/expiry.js";
 import { dt } from "../lib/util.js";
@@ -40,6 +41,12 @@ function checks(s) {
   ].join("")}</table></div>`;
 }
 
+// Which currency the money tiles show (this device only).
+export const ui = { cur: "LAK" };
+try {
+  if (CUR.includes(localStorage.dashCur)) ui.cur = localStorage.dashCur;
+} catch {}
+
 const P = ["#8b5cf6", "#22d3ee", "#f472b6", "#fbbf24", "#34d399", "#fb923c"];
 
 export default function dash(s) {
@@ -70,13 +77,18 @@ export default function dash(s) {
         })
         .join("")
     : `<circle r="38" cx="50" cy="50" fill="none" stroke="#2a1a5a" stroke-width="22"/>`;
-  return `<div class="stats">${[
+  const pick = `<div class="row" style="justify-content:flex-end;margin-bottom:10px"><span class="mut">${t(
+    "dash.showIn",
+  )}</span><select data-input="dashCur" aria-label="${E(t("dash.showIn"))}">${CUR.map(
+    (c) => `<option value="${c}"${c == ui.cur ? " selected" : ""}>${SIGN[c]} ${c}</option>`,
+  ).join("")}</select></div>`;
+  return `${pick}<div class="stats">${[
     ["dash.products", num(I.length), "▥", ""],
     ["dash.units", num(units), "▦", ""],
     ["dash.low", num(lo), "⚠", "warn"],
-    ["dash.value", fmt(val), "₭", "in"],
-    ["dash.retail", fmt(retail), "₭", "in"],
-    ["dash.sales", fmt(sold.reduce((a, x) => a + +x.total, 0)), "🧾", "in", tn("dash.sales.sub", sold.length)],
+    ["dash.value", fmtIn(val, ui.cur), SIGN[ui.cur], "in"],
+    ["dash.retail", fmtIn(retail, ui.cur), SIGN[ui.cur], "in"],
+    ["dash.sales", fmtIn(sold.reduce((a, x) => a + +x.total, 0), ui.cur), "🧾", "in", tn("dash.sales.sub", sold.length)],
     ["dash.expiring", num(dated.reduce((a, l) => a + +l.qty, 0)), "⏳", dated.length ? "warn" : "", tn("dash.expiring.sub", dated.length)],
   ]
     .map(

@@ -3,8 +3,9 @@ export const state = {
   user: null, // { id, email }
   shop: null, // { id, name, plan, plan_until }
   role: null, // 'owner' | 'staff'
-  settings: { low_alert: true, auto_reorder: false },
+  settings: { low_alert: true, auto_reorder: false, vat_rate: 10, expiry_days: 30, rates: {} },
   items: [],
+  packs: [], // bigger units of a product: { id, item_id, name, size, barcode, price }
   orders: [],
   movements: [], // last 30 days
   lots: [], // units per expiry date, all of them

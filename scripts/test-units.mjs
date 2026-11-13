@@ -442,5 +442,44 @@ await ok("receipt numbers: the till's own when it has one", async () => {
   eq(AP.saleNo({}), "…", "not yet");
 });
 
+console.log("Packs, expiring price, VAT (apply.js = create_sale)");
+const packDb = () => {
+  const d = shopDb();
+  d.packs = [{ id: "p1", shop_id: "s", item_id: "i1", name: "Crate", size: 6, barcode: "CR-1", price: 54000 }];
+  d.settings = { s: { vat_rate: 10 } };
+  return d;
+};
+await ok("a pack line takes size × packs, at the pack price, and records the pack", async () => {
+  const d = packDb(),
+    s = AP.sale(d, C0, { client_id: "pk1", paid: 1e9, lines: [{ item_id: "i1", qty: 2, pack_id: "p1" }] });
+  eq(d.items[0].qty, 8, "stock");
+  eq(`${s.total} ${d.sale_lines[0].qty} ${d.sale_lines[0].pack_qty} ${d.sale_lines[0].pack_name}`, "108000 12 2 Crate", "line");
+});
+await ok("VAT inside the total, rounded like the database", async () => {
+  const d = packDb(),
+    s = AP.sale(d, C0, { client_id: "pk2", paid: 1e9, lines: [{ item_id: "i1", qty: 2, pack_id: "p1" }] });
+  eq(`${s.vat} ${s.vat_rate}`, "9818.18 10", "vat");
+  eq(AP.vatOf(210000, 10), 19090.91, "as test-db");
+  eq(AP.vatOf(5000, 0), 0, "no VAT");
+});
+await ok("an expiring-price batch sells first, at its price", async () => {
+  const d = packDb();
+  d.lots.find((l) => l.expiry == "2099-03-01").price = 4000;
+  const s = AP.sale(d, C0, { client_id: "cut1", paid: 1e9, lines: [{ item_id: "i1", qty: 3, expiry: "2099-03-01" }] });
+  eq(s.total, 12000, "total");
+  eq(lotList(d), "2000-01-01:6 2099-01-01:4 2099-03-01:5", "that batch");
+});
+await ok("pack and plain lines of one product stay separate lines", async () => {
+  const d = packDb(),
+    s = AP.sale(d, C0, { client_id: "mix1", paid: 1e9, lines: [{ item_id: "i1", qty: 1, pack_id: "p1" }, { item_id: "i1", qty: 2 }] });
+  eq(`${d.sale_lines.length} ${s.total}`, "2 74000", "lines");
+});
+await ok("lookupCode finds a product by its pack's barcode", async () => {
+  const d = packDb(),
+    r = X.lookupCode(d.items, "CR-1", d.packs);
+  eq(`${r.item?.sku} ${r.pack?.name}`, "MILK Crate", "found");
+  eq(X.lookupCode(d.items, "CR-1").item, undefined, "not without packs");
+});
+
 console.log(fails ? `\n${fails} FAILED` : "\nAll unit checks passed");
 process.exit(fails ? 1 : 0);

@@ -6,8 +6,8 @@
 // It mirrors the database functions in supabase/migrations, so the screen
 // shows what the server will end up with.
 //
-// db: { items, lots, movements, sales, sale_lines, orders, settings }, where
-// settings maps shop id → { auto_reorder, ... }. Lists are changed in place.
+// db: { items, packs, lots, movements, sales, sale_lines, orders, settings }, where
+// settings maps shop id → { auto_reorder, vat_rate, ... }. Lists are changed in place.
 // ctx: { shopId, userId, at (ISO time it happened), short (may go below zero) }
 import { err } from "../i18n/index.js";
 import { today } from "../lib/expiry.js";
@@ -27,9 +27,27 @@ export function linePrice(it, qty) {
   return { price: ws ? +it.price_wholesale : +it.price, ws };
 }
 
+/** What one till line costs, the same way create_sale() prices it:
+ * a pack at the pack's price (qty counts packs), a batch with an expiring
+ * price at that price, otherwise the normal or wholesale price.
+ * Returns { price (per unit sold), ws, pack, base (units leaving stock) }. */
+export function priceOf(db, it, { qty, pack_id = null, expiry = null }) {
+  if (pack_id) {
+    const pack = (db.packs || []).find((p) => p.id == pack_id && p.item_id == it.id) || fail("err.packNotFound");
+    return { price: +pack.price, ws: false, pack, base: qty * +pack.size };
+  }
+  const lot = expiry && db.lots.find((l) => l.item_id == it.id && l.expiry == expiry);
+  if (lot && lot.price != null) return { price: +lot.price, ws: false, pack: null, base: qty };
+  return { ...linePrice(it, qty), pack: null, base: qty };
+}
+
+/** The VAT inside a total, as create_sale() works it out (rate in %). */
+export const vatOf = (total, rate) => (rate > 0 ? Math.round((total * rate * 100) / (100 + rate)) / 100 : 0);
+
 /** stock_move(): stock leaves from in-date lots soonest first, then undated
- * stock, then expired lots; each part is its own movement. */
-export function stockMove(db, ctx, itemId, delta, note, expiry = null, saleId = null) {
+ * stock, then expired lots; each part is its own movement. `first`: an
+ * expiry date whose batch goes before all of that (an expiring-price sale). */
+export function stockMove(db, ctx, itemId, delta, note, expiry = null, saleId = null, first = null) {
   const it = db.items.find((i) => i.id == itemId && i.shop_id == ctx.shopId) || fail("err.itemNotFound");
   if (!delta) fail("err.zeroQty");
   const q = +it.qty + delta;
@@ -69,6 +87,7 @@ export function stockMove(db, ctx, itemId, delta, note, expiry = null, saleId = 
       left -= n;
       log("out", n, lot.expiry);
     };
+    if (first) lots.filter((l) => l.expiry == first).forEach(take);
     lots.filter((l) => l.expiry >= now).forEach(take);
     if (left && free) {
       const n = Math.min(free, left);
@@ -104,8 +123,9 @@ function autoReorder(db, it) {
     });
 }
 
-/** create_sale(). lines: [{ item_id, qty, price? }]; a line's price is used
- * only when ctx.short is set (an offline sale keeps the price it was sold at).
+/** create_sale(). lines: [{ item_id, qty, price?, pack_id?, expiry? }]; a line's
+ * price is used only when ctx.short is set (an offline sale keeps the price it
+ * was sold at). With pack_id, qty counts packs.
  * Returns the new sale, or the existing one with the same client_id. */
 export function sale(
   db,
@@ -129,21 +149,25 @@ export function sale(
     cashier: ctx.userId ?? null,
     created_at: at(ctx),
   };
+  // One line per product, pack and batch (a batch only counts without a pack).
   const merged = new Map();
   for (const l of lines) {
     if (!(+l.qty > 0)) fail("err.qtyPositive");
-    const m = merged.get(l.item_id) || { qty: 0, price: null };
+    const pack_id = l.pack_id || null,
+      expiry = pack_id ? null : l.expiry || null,
+      k = [l.item_id, pack_id || "", expiry || ""].join("|");
+    const m = merged.get(k) || { item_id: l.item_id, pack_id, expiry, qty: 0, price: null };
     m.qty += +l.qty;
     if (l.price != null) m.price = +l.price;
-    merged.set(l.item_id, m);
+    merged.set(k, m);
   }
   let sub = 0;
-  for (const [item_id, { qty, price: sold }] of [...merged].sort(([a], [b]) => (a < b ? -1 : 1))) {
+  for (const [, { item_id, pack_id, expiry, qty, price: sold }] of [...merged].sort(([a], [b]) => (a < b ? -1 : 1))) {
     const it = db.items.find((i) => i.id == item_id && i.shop_id == ctx.shopId) || fail("err.itemNotFound");
-    let { price, ws } = linePrice(it, qty);
+    let { price, ws, pack, base } = priceOf(db, it, { qty, pack_id, expiry });
     if (ctx.short && sold != null) price = sold;
     else if (!(price > 0)) fail("err.noPrice", { sku: it.sku });
-    stockMove(db, ctx, item_id, -qty, "sale", null, s.id);
+    stockMove(db, ctx, item_id, -base, "sale", null, s.id, expiry);
     db.sale_lines.push({
       id: uid(),
       shop_id: ctx.shopId,
@@ -151,10 +175,15 @@ export function sale(
       item_id,
       sku: it.sku,
       name: it.name,
-      qty,
-      unit_price: price,
+      qty: base,
+      unit_price: (qty * price) / base,
       wholesale: ws,
       line_total: qty * price,
+      pack_id: pack?.id ?? null,
+      pack_name: pack?.name ?? null,
+      pack_size: pack ? +pack.size : null,
+      pack_qty: pack ? qty : null,
+      expiry,
       created_at: s.created_at,
     });
     sub += qty * price;
@@ -164,7 +193,8 @@ export function sale(
   const total = sub - discount;
   paid = method == "cash" ? +paid || 0 : total;
   if (paid < total) fail("err.cashShort");
-  Object.assign(s, { subtotal: sub, discount, total, paid, change_due: paid - total });
+  const rate = +(db.settings[ctx.shopId]?.vat_rate ?? 0) || 0;
+  Object.assign(s, { subtotal: sub, discount, total, paid, change_due: paid - total, vat_rate: rate, vat: vatOf(total, rate) });
   db.sales.push(s);
   return s;
 }

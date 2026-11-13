@@ -12,14 +12,21 @@ export function receiptHtml(shop, sale, lines) {
     .map(
       (l) =>
         `<tr><td colspan="2">${E(l.name)}</td></tr>${row(
-          `${num(l.qty)} × ${fmt(l.unit_price)}${l.wholesale ? ` <small>${t("pos.wholesale")}</small>` : ""}`,
+          // A pack line: "2 × Carton (24) × ₭210,000"; a line at an expiring price is marked.
+          l.pack_qty
+            ? `${num(l.pack_qty)} × ${E(l.pack_name)} (${num(l.pack_size)}) × ${fmt(l.line_total / l.pack_qty)}`
+            : `${num(l.qty)} × ${fmt(l.unit_price)}${l.wholesale ? ` <small>${t("pos.wholesale")}</small>` : ""}${
+                l.expiry ? ` <small>${t("rc.cut")}</small>` : ""
+              }`,
           fmt(l.line_total),
           "sub",
         )}`,
     )
     .join("")}</table><table class="sum">${row(t("pos.subtotal"), fmt(sale.subtotal))}${
     +sale.discount ? row(t("pos.discount"), "−" + fmt(sale.discount)) : ""
-  }${row(`<b>${t("pos.total")}</b>`, `<b>${fmt(sale.total)}</b>`, "big")}${row(
+  }${row(`<b>${t("pos.total")}</b>`, `<b>${fmt(sale.total)}</b>`, "big")}${
+    +sale.vat ? row(t("rc.vat", { r: num(sale.vat_rate) }), fmt(sale.vat), "sub") : ""
+  }${row(
     t(sale.method == "cash" ? "pos.cash" : "pos.transfer"),
     fmt(sale.paid),
   )}${sale.method == "cash" ? row(t("pos.change"), fmt(sale.change_due)) : ""}</table><p class="c">${t("rc.thanks")}</p></div>`;

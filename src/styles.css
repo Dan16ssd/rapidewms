@@ -842,3 +842,11 @@ table.cart td {
   font-size: 1.25em;
   letter-spacing: 0.08em;
 }
+
+/* A product's pack, as a tag the owner can tap to change. */
+button.tag.pk {
+  cursor: pointer;
+  border: 0;
+  font: inherit;
+  margin-top: 4px;
+}

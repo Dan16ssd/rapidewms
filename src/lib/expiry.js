@@ -4,7 +4,9 @@
 //
 // Dates are ISO strings, YYYY-MM-DD, in the shop's local calendar.
 
-export const SOON_DAYS = 30;
+// How many days ahead a date counts as "soon": the shop's setting (settings.expiry_days).
+export let SOON_DAYS = 30;
+export const setSoonDays = (n) => (SOON_DAYS = +n > 0 ? +n : 30);
 
 const pad = (n) => String(n).padStart(2, "0");
 const isoOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -206,13 +208,21 @@ export function codeVariants(code) {
 }
 
 // Find the product a scanned code belongs to, and any expiry it carries.
-export function lookupCode(items, raw) {
+// packs: a product's bigger units ("Carton" = 24); a carton's own barcode
+// finds the product with `pack` set.
+export function lookupCode(items, raw, packs = []) {
   const code = String(raw || "").trim(),
     gs1 = parseGS1(code),
     keys = codeVariants(gs1 ? gs1.gtin : code),
     lc = code.toLowerCase();
-  const item =
+  let pack = null;
+  let item =
     items.find((i) => i.barcode && keys.includes(String(i.barcode).trim())) ||
     items.find((i) => i.sku.toLowerCase() == lc);
-  return { item, code: gs1 ? gs1.gtin : code, expiry: gs1?.expiry || null, batch: gs1?.batch || null };
+  if (!item) {
+    pack = packs.find((p) => p.barcode && keys.includes(String(p.barcode).trim())) || null;
+    item = pack ? items.find((i) => i.id == pack.item_id) : undefined;
+    if (!item) pack = null;
+  }
+  return { item, pack, code: gs1 ? gs1.gtin : code, expiry: gs1?.expiry || null, batch: gs1?.batch || null };
 }

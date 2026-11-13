@@ -46,6 +46,8 @@ export function csvToItems(text) {
           price_wholesale: col("wholesale"),
           wholesale_min_qty: col("wholesale min"),
           kind: col("kind"),
+          // exact: "unit price" and "unit cost" are other columns
+          unit: h.indexOf("unit"),
         }
       : // Headerless layout: new columns are appended, so old files keep working.
         {
@@ -60,6 +62,7 @@ export function csvToItems(text) {
           price_wholesale: 7,
           wholesale_min_qty: 8,
           kind: 9,
+          unit: -1,
         },
     get = (r, k) => (ix[k] >= 0 ? (r[ix[k]] ?? "").trim() : "");
   return rows
@@ -74,6 +77,7 @@ export function csvToItems(text) {
       price: +get(r, "price") || 0,
       price_wholesale: +get(r, "price_wholesale") || 0,
       wholesale_min_qty: +get(r, "wholesale_min_qty") || 0,
+      unit: get(r, "unit").slice(0, 20),
       kind: /^consum|^ບໍລິໂພກ|^ສິນຄ້າບໍລິໂພກ/i.test(get(r, "kind")) ? "consumable" : "durable",
     }))
     .filter((x) => x.sku && x.name);

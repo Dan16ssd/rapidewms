@@ -6,11 +6,13 @@
 import { state, emit, canWrite } from "./state.js";
 import { err } from "../i18n/index.js";
 import * as apply from "./apply.js";
+import { costFields, packRow } from "./fields.js";
 
 const KEY = "rapidewms.local";
 const uid = () => crypto.randomUUID();
 const nowIso = () => new Date().toISOString();
 
+const SETTINGS = { low_alert: true, auto_reorder: false, vat_rate: 10, expiry_days: 30, rates: {} };
 let db = load();
 function load() {
   let d = null;
@@ -19,7 +21,9 @@ function load() {
   } catch {}
   if (!d || !d.shops) d = { shops: [], settings: {} };
   // Data saved before expiry tracking and the till existed lacks these lists.
-  for (const k of ["items", "orders", "movements", "lots", "sales", "sale_lines"]) d[k] ||= [];
+  for (const k of ["items", "orders", "movements", "lots", "sales", "sale_lines", "packs"]) d[k] ||= [];
+  // ...and settings saved before VAT and expiry reminders.
+  for (const id in d.settings) d.settings[id] = { ...SETTINGS, ...d.settings[id] };
   return d;
 }
 const persist = () => (localStorage[KEY] = JSON.stringify(db));
@@ -65,7 +69,7 @@ export async function createShop(name) {
     created_at: nowIso(),
   };
   db.shops.push(s);
-  db.settings[s.id] = { shop_id: s.id, low_alert: true, auto_reorder: false };
+  db.settings[s.id] = { shop_id: s.id, ...SETTINGS };
   persist();
   return s.id;
 }
@@ -91,6 +95,7 @@ export async function reload() {
     .sort(byNewest);
   const shown = new Set(state.sales.map((x) => x.id));
   state.saleLines = mine(db.sale_lines).filter((l) => shown.has(l.sale_id));
+  state.packs = mine(db.packs);
   state.settings = db.settings[shopId()];
   state.shop = db.shops.find((s) => s.id == shopId());
   emit();
@@ -149,6 +154,7 @@ export async function saveItem(id, f) {
     price: Math.max(0, +f.price || 0),
     price_wholesale: Math.max(0, +f.price_wholesale || 0),
     wholesale_min_qty: Math.max(0, +f.wholesale_min_qty || 0),
+    ...costFields(f),
     updated_at: nowIso(),
   };
   if (!row.sku || !row.name) fail("err.needSkuName");
@@ -166,6 +172,7 @@ export async function deleteItem(id) {
   db.items = db.items.filter((i) => !(i.id == id && i.shop_id == shopId()));
   db.orders = db.orders.filter((o) => o.item_id != id);
   db.lots = db.lots.filter((l) => l.item_id != id);
+  db.packs = db.packs.filter((p) => p.item_id != id);
   db.sale_lines.forEach((l) => l.item_id == id && (l.item_id = null)); // receipts keep the name
   db.movements.forEach((m) => m.item_id == id && (m.item_id = null)); // history keeps the SKU
   await commit();
@@ -190,6 +197,7 @@ export async function importItems(list) {
       price: Math.max(0, +x.price || 0),
       price_wholesale: Math.max(0, +x.price_wholesale || 0),
       wholesale_min_qty: Math.max(0, +x.wholesale_min_qty || 0),
+      unit: String(x.unit || "").slice(0, 20),
       created_at: nowIso(),
       updated_at: nowIso(),
     };
@@ -247,7 +255,7 @@ export async function createSale({ client_id, lines, discount = 0, method = "cas
   try {
     const shop = db.shops.find((x) => x.id == shopId()),
       known = db.sales.some((x) => x.shop_id == shopId() && x.client_id == client_id),
-      lines0 = lines.map(({ item_id, qty }) => ({ item_id, qty })),
+      lines0 = lines.map(({ item_id, qty, pack_id, expiry }) => ({ item_id, qty, pack_id, expiry })),
       sale = apply.sale(db, ctx(), { client_id, lines: lines0, discount, method, paid, receipt_no: (shop.receipt_seq || 0) + 1 });
     if (!known) shop.receipt_seq = sale.receipt_no;
     await commit();
@@ -271,7 +279,7 @@ export async function voidSale(id) {
 
 export async function setSetting(k, v) {
   ownerOnly();
-  db.settings[shopId()][k] = !!v;
+  db.settings[shopId()][k] = v;
   await commit();
 }
 
@@ -284,7 +292,34 @@ export async function eraseAll() {
   db.lots = db.lots.filter(keep);
   db.sales = db.sales.filter(keep);
   db.sale_lines = db.sale_lines.filter(keep);
+  db.packs = db.packs.filter(keep);
   db.shops.find((x) => x.id == shopId()).receipt_seq = 0;
+  await commit();
+}
+
+// ---------- packs and expiring prices (mirror 006_units_vat.sql) ----------
+
+export async function savePack(id, itemId, f) {
+  writable();
+  ownerOnly();
+  const row = packRow(f);
+  if (row.barcode && mine(db.packs).some((p) => p.id != id && p.barcode == row.barcode)) fail("err.packBarcode");
+  const p = id && db.packs.find((x) => x.id == id && x.shop_id == shopId());
+  if (p) Object.assign(p, row);
+  else db.packs.push({ id: uid(), shop_id: shopId(), item_id: itemId, created_at: nowIso(), ...row });
+  await commit();
+}
+export async function deletePack(id) {
+  writable();
+  ownerOnly();
+  db.packs = db.packs.filter((p) => !(p.id == id && p.shop_id == shopId()));
+  await commit();
+}
+export async function setLotPrice(itemId, expiry, price) {
+  writable();
+  ownerOnly();
+  const lot = db.lots.find((l) => l.item_id == itemId && l.expiry == expiry && l.shop_id == shopId()) || fail("err.lotNotFound");
+  lot.price = price;
   await commit();
 }
 

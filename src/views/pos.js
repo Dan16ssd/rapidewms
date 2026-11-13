@@ -9,14 +9,29 @@ import { state, isOwner, canWrite } from "../data/store.js";
 import { lookupCode, status } from "../lib/expiry.js";
 import { receiptHtml, printReceipt } from "../lib/receipt.js";
 import { isQr } from "../lib/camera.js";
-import { linePrice, saleNo } from "../data/apply.js";
+import { linePrice, priceOf, vatOf, saleNo } from "../data/apply.js";
 
 // cid: this sale's id for the database, made once and kept across retries, so
 // a sale resent after a dropped connection is not sold twice. Any change to
 // the cart makes it a different sale, with a new id.
+// A cart line: { k, id, qty, pack, exp }. pack: a pack id (qty counts packs);
+// exp: the expiry date of a batch sold at its expiring price. k tells lines apart.
 const st = { cart: [], discount: "", method: "cash", paid: "", cid: null, q: "" };
 
 const item = (id) => state.items.find((i) => i.id == id);
+const keyOf = (id, pack, exp) => [id, pack || "", exp || ""].join("|");
+const packOf = (l) => (l.pack ? state.packs.find((p) => p.id == l.pack) : null);
+// The line's price as create_sale() will work it out; null when it can't be priced.
+const priceLine = (it, l) => {
+  try {
+    return priceOf(state, it, { qty: l.qty, pack_id: l.pack, expiry: l.exp });
+  } catch {
+    return { price: 0, ws: false, pack: null, base: l.qty };
+  }
+};
+// The cheapest batch of a product with an expiring price, if any.
+const cutLot = (it) =>
+  state.lots.filter((x) => x.item_id == it.id && x.price != null).sort((a, b) => a.price - b.price)[0] || null;
 
 // linePrice: the same rule as create_sale() in the database; shown here, decided there.
 export { linePrice };
@@ -24,20 +39,23 @@ export { linePrice };
 function totals() {
   let sub = 0,
     problems = 0;
+  const need = new Map(); // units each product needs, packs counted out
   for (const l of st.cart) {
     const it = item(l.id);
     if (!it) continue;
-    const p = linePrice(it, l.qty).price;
+    const { price: p, base } = priceLine(it, l);
     sub += p * l.qty;
-    // Offline, the count on this device can be behind (another till received
-    // stock): the goods are in the customer's hand, so the sale goes ahead and
-    // the server flags it if the stock really wasn't there.
-    if (!(p > 0) || (l.qty > +it.qty && state.online)) problems++;
+    need.set(it.id, (need.get(it.id) || 0) + base);
+    if (!(p > 0)) problems++;
   }
+  // Offline, the count on this device can be behind (another till received
+  // stock): the goods are in the customer's hand, so the sale goes ahead and
+  // the server flags it if the stock really wasn't there.
+  if (state.online) for (const [id, n] of need) if (n > +item(id).qty) problems++;
   const discount = Math.min(Math.max(+st.discount || 0, 0), sub),
     total = sub - discount,
     paid = st.method == "cash" ? +st.paid || 0 : total;
-  return { sub, discount, total, paid, change: paid - total, problems };
+  return { sub, discount, total, paid, change: paid - total, problems, need };
 }
 
 const changed = () => {
@@ -45,12 +63,13 @@ const changed = () => {
   refresh();
 };
 
-export function add(id, qty = 1) {
+export function add(id, qty = 1, pack = null, exp = null) {
   const it = item(id);
   if (!it) return;
-  const l = st.cart.find((x) => x.id == id);
+  const k = keyOf(id, pack, exp),
+    l = st.cart.find((x) => x.k == k);
   if (l) l.qty += qty;
-  else st.cart.unshift({ id, qty });
+  else st.cart.unshift({ k, id, qty, pack, exp });
   st.q = "";
   const q = $("#pq");
   if (q) q.value = "";
@@ -61,8 +80,8 @@ export function add(id, qty = 1) {
 export function addCode(code, format) {
   code = String(code || "").trim();
   if (!code) return;
-  const { item: it } = lookupCode(state.items, code);
-  if (it) return add(it.id);
+  const { item: it, pack } = lookupCode(state.items, code, state.packs);
+  if (it) return add(it.id, 1, pack?.id ?? null);
   // A camera QR that is no product (a payment slip, a link): say so, don't search names.
   if (isQr(format)) return toast(t("scan.qrText", { text: code.slice(0, 60) }), true);
   // Not a code: the first product whose name matches what was typed.
@@ -79,18 +98,27 @@ function matches(q) {
     .slice(0, 8);
 }
 
-export const setQty = (id, q) => {
-  const l = st.cart.find((x) => x.id == id);
+export const setQty = (k, q) => {
+  const l = st.cart.find((x) => x.k == k);
   if (!l) return;
   q = Math.round(+q * 1000) / 1000;
   if (q > 0) l.qty = q;
   else st.cart = st.cart.filter((x) => x != l);
   changed();
 };
-export const inc = (id, d) => {
-  const l = st.cart.find((x) => x.id == id);
-  if (l) setQty(id, l.qty + d);
+export const inc = (k, d) => {
+  const l = st.cart.find((x) => x.k == k);
+  if (l) setQty(k, l.qty + d);
 };
+/** Switch a line between the normal price and its batch's expiring price. */
+export function toggleCut(k) {
+  const l = st.cart.find((x) => x.k == k),
+    it = l && item(l.id);
+  if (!it || l.pack) return;
+  const lot = l.exp ? null : cutLot(it);
+  st.cart = st.cart.filter((x) => x != l);
+  add(it.id, l.qty, null, lot ? lot.expiry : null);
+}
 export const remove = (id) => setQty(id, 0);
 export const clear = () => {
   st.cart = [];
@@ -148,7 +176,7 @@ export async function charge() {
   st.cid ||= crypto.randomUUID();
   const sale = await store.createSale({
     client_id: st.cid,
-    lines: st.cart.map((l) => ({ item_id: l.id, qty: l.qty })),
+    lines: st.cart.map((l) => ({ item_id: l.id, qty: l.qty, pack_id: l.pack, expiry: l.exp })),
     discount: tt.discount,
     method: st.method,
     paid: tt.paid,
@@ -190,29 +218,36 @@ export async function voidIt(cid) {
 
 // ---------- drawing ----------
 
-function cartHtml() {
+function cartHtml(need) {
   if (!st.cart.length) return `<p class="mut c pad">${t("pos.empty")}</p>`;
   return `<table class="cart">${st.cart
     .map((l) => {
       const it = item(l.id);
       if (!it) return "";
-      const { price, ws } = linePrice(it, l.qty),
+      const { price, ws } = priceLine(it, l),
+        pack = packOf(l),
+        cut = !l.pack && cutLot(it),
         expired = state.lots.find((x) => x.item_id == it.id && status(x.expiry) == "expired"),
+        k = E(l.k),
         notes = [
+          pack ? `<span class="tag">${E(pack.name)} × ${num(pack.size)}${it.unit ? " " + E(it.unit) : ""}</span>` : "",
           ws ? `<span class="tag in">${t("pos.wholesale")}</span>` : "",
-          l.qty > +it.qty ? `<span class="bad">${t("pos.onlyN", { n: num(it.qty) })}</span>` : "",
+          l.exp ? `<span class="tag warn">${t("pos.cutTag", { d: dateText(l.exp) })}</span>` : "",
+          // A batch of this product sells for less: one tap switches the line to it.
+          cut
+            ? `<button class="g" data-act="posCut" data-id="${k}">${
+                l.exp ? t("pos.cutOff") : t("pos.cutOn", { p: fmt(cut.price), n: num(cut.qty) })
+              }</button>`
+            : "",
+          (need.get(it.id) || 0) > +it.qty ? `<span class="bad">${t("pos.onlyN", { n: num(it.qty) })}</span>` : "",
           price > 0 ? "" : `<span class="bad">${t("pos.noPrice")}</span>`,
           expired ? `<span class="warn">${t("pos.expiredStock", { d: dateText(expired.expiry) })}</span>` : "",
         ].join(" ");
       return `<tr><td class="nm"><b>${E(it.name)}</b><br><small class="mut">${E(it.sku)} · ${fmt(
         price,
-      )}</small> ${notes}</td><td class="qty"><button class="g" data-act="posDec" data-id="${E(
-        it.id,
-      )}">−</button><input type="number" min="0" step="any" value="${l.qty}" data-input="pos" data-qty="${E(
-        it.id,
-      )}"><button class="g" data-act="posInc" data-id="${E(it.id)}">＋</button></td><td class="lt">${fmt(
+      )}</small> ${notes}</td><td class="qty"><button class="g" data-act="posDec" data-id="${k}">−</button><input type="number" min="0" step="any" value="${l.qty}" data-input="pos" data-qty="${k}"><button class="g" data-act="posInc" data-id="${k}">＋</button></td><td class="lt">${fmt(
         price * l.qty,
-      )}</td><td><button class="g" data-act="posDel" data-id="${E(it.id)}" title="${E(t("tip.delete"))}">✕</button></td></tr>`;
+      )}</td><td><button class="g" data-act="posDel" data-id="${k}" title="${E(t("tip.delete"))}">✕</button></td></tr>`;
     })
     .join("")}</table>`;
 }
@@ -274,9 +309,12 @@ export function refresh() {
   if (!$("#pos")) return;
   const tt = totals(),
     focus = document.activeElement;
-  if (!$("#cart").contains(focus)) $("#cart").innerHTML = cartHtml();
+  // Not while a qty is being typed: redrawing would drop the cursor.
+  if (!($("#cart").contains(focus) && focus.tagName == "INPUT")) $("#cart").innerHTML = cartHtml(tt.need);
   $("#psub").textContent = fmt(tt.sub);
   $("#ptot").textContent = fmt(tt.total);
+  const rate = +state.settings.vat_rate || 0;
+  if ($("#pvat")) $("#pvat").textContent = rate ? t("pos.vatIn", { r: rate, v: fmt(vatOf(tt.total, rate)) }) : "";
   $("#pchg").textContent = tt.change >= 0 ? fmt(tt.change) : "−" + fmt(-tt.change);
   $("#pchg").className = "n " + (tt.change >= 0 ? "in" : "bad");
   $("#pcashbox").hidden = st.method != "cash";
@@ -287,7 +325,7 @@ export function refresh() {
   $("#pcharge").disabled =
     noTill() ||
     !st.cart.length || tt.problems > 0 || (st.method == "cash" && tt.paid < tt.total);
-  $("#pcount").textContent = st.cart.length ? t("pos.lines", { n: st.cart.reduce((a, l) => a + l.qty, 0) }) : "";
+  $("#pcount").textContent = st.cart.length ? t("pos.lines", { n: [...tt.need.values()].reduce((a, n) => a + n, 0) }) : "";
   $("#psales").innerHTML = salesHtml();
 }
 
@@ -304,7 +342,7 @@ export default function pos() {
     "pos.subtotal",
   )}<b id="psub"></b></div><label class="mt">${t("pos.discount")}<input id="pdisc" type="number" min="0" step="any" data-input="pos" value="${E(
     st.discount,
-  )}" placeholder="0"></label><div class="sh">${t("pos.total")}</div><b class="n big" id="ptot"></b><div class="row seg"><button class="g" data-act="posMethod" data-m="cash">${t(
+  )}" placeholder="0"></label><div class="sh">${t("pos.total")}</div><b class="n big" id="ptot"></b><small class="mut" id="pvat"></small><div class="row seg"><button class="g" data-act="posMethod" data-m="cash">${t(
     "pos.cash",
   )}</button><button class="g" data-act="posMethod" data-m="transfer">${t(
     "pos.transfer",

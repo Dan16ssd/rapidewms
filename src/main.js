@@ -5,7 +5,7 @@ import "@fontsource/noto-sans-lao/lao-400.css";
 import "@fontsource/noto-sans-lao/lao-500.css";
 import "@fontsource/noto-sans-lao/lao-600.css";
 import "@fontsource/noto-sans-lao/lao-700.css";
-import { $, E, toast, form, pickPhoto, checkExpiry, slashDate, dateText } from "./lib/util.js";
+import { $, E, toast, form, pickPhoto, checkExpiry, slashDate, dateText, fmt, num } from "./lib/util.js";
 import { t, tn, errText, setLang, other, applyStatic, fDateTime, fTime } from "./i18n/index.js";
 import { csvToItems } from "./lib/csv.js";
 import { exportSet, exportZip } from "./lib/export.js";
@@ -13,7 +13,7 @@ import * as store from "./data/store.js";
 import { state, canWrite, isOwner } from "./data/store.js";
 import { showAuth, showCreateShop, showNewPassword } from "./auth.js";
 import * as scanner from "./scanner.js";
-import dash from "./views/dash.js";
+import dash, { ui as dashUi } from "./views/dash.js";
 import inv, { ui as invUi, rows as invRows } from "./views/inv.js";
 import ord from "./views/ord.js";
 import scan from "./views/scan.js";
@@ -22,7 +22,8 @@ import auto from "./views/auto.js";
 import sys from "./views/sys.js";
 import pos, * as till from "./views/pos.js";
 import exp from "./views/exp.js";
-import { status, SOON_DAYS } from "./lib/expiry.js";
+import { status, SOON_DAYS, setSoonDays, daysLeft } from "./lib/expiry.js";
+import { CUR, SIGN, kipPer } from "./lib/rates.js";
 import { MODEL_MB, isCached, identify, shrink, crashedBefore } from "./lib/identify.js";
 import { detectImage } from "./lib/camera.js";
 
@@ -41,11 +42,39 @@ const N = [
 ];
 let view = VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : "dash";
 
+// ---------- expiry notification ----------
+// Once a day, a phone or PC notification about batches expiring within a week
+// (or already expired), if the owner allowed it. Shown while the app is open:
+// a reminder with the app closed needs a server job (not built yet).
+function expiryNote(force) {
+  if (!("Notification" in window) || Notification.permission != "granted") return;
+  const day = new Date().toDateString(),
+    key = "rapidewms.expNote." + state.shop.id;
+  let seen = null;
+  try {
+    seen = localStorage[key];
+  } catch {}
+  if (seen == day && !force) return;
+  const week = state.lots.filter((l) => daysLeft(l.expiry) <= 7);
+  try {
+    localStorage[key] = day;
+  } catch {}
+  if (!week.length) return;
+  const body = tn("note.expBody", week.length),
+    title = t("note.expTitle", { shop: state.shop.name });
+  // An installed app on Android only shows notifications through its service worker.
+  if (navigator.serviceWorker?.controller)
+    navigator.serviceWorker.ready.then((r) => r.showNotification(title, { body, tag: "expiry", icon: "icon.svg" }));
+  else new Notification(title, { body, tag: "expiry" });
+}
+
 // ---------- render ----------
 
 // force: rebuild the till too (a language switch); otherwise it only refreshes.
 function render(force) {
   if (!state.shop) return;
+  setSoonDays(state.settings.expiry_days);
+  expiryNote();
   $("#auth").hidden = true;
   $("#app").hidden = false;
   const expired = state.lots.filter((l) => status(l.expiry) == "expired").length,
@@ -168,6 +197,7 @@ async function itemForm(id, code) {
       tools: [{ act: "identify", label: t((await isCached()) ? "btn.identifyReady" : "btn.identify") }],
     },
     { k: "category", label: t("f.category"), value: i.category },
+    { k: "unit", label: t("f.unit"), value: i.unit || "", hint: t("f.unitHint") },
     {
       k: "kind",
       label: t("f.kind"),
@@ -189,7 +219,14 @@ async function itemForm(id, code) {
       hint: t("f.expiryHint"),
     },
     { k: "min_qty", label: t("f.min"), type: "number", value: +i.min_qty },
-    { k: "cost", label: t("f.cost"), type: "number", value: +i.cost },
+    {
+      k: "cost_currency",
+      label: t("f.costCur"),
+      type: "select",
+      value: i.cost_currency || "LAK",
+      options: CUR.map((c) => [c, c == "LAK" ? "₭ LAK" : `${SIGN[c]} ${c} (1 = ${num(Math.round(kipPer(c) * 100) / 100)} ₭)`]),
+    },
+    { k: "cost", label: t("f.costIn"), type: "number", value: i.cost_currency && i.cost_currency != "LAK" ? +i.cost_orig : +i.cost },
     { k: "price", label: t("f.price"), type: "number", value: +i.price || 0 },
     { k: "price_wholesale", label: t("f.wprice"), type: "number", value: +i.price_wholesale || 0 },
     { k: "wholesale_min_qty", label: t("f.wmin"), type: "number", value: +i.wholesale_min_qty || 0 },
@@ -199,7 +236,51 @@ async function itemForm(id, code) {
   toast(t(id ? "msg.itemSaved" : "msg.itemAdded"));
 }
 
+// A bigger unit of a product: "Carton" = 24 cans, with its own barcode and price.
+async function packForm(itemId, packId) {
+  if (!needWrite()) return;
+  const it = state.items.find((x) => x.id == itemId),
+    p = state.packs.find((x) => x.id == packId) || { name: "", size: "", barcode: "", price: "" },
+    f = await form(
+      t(packId ? "title.editPack" : "title.addPack", { name: it.name }),
+      [
+        { k: "name", label: t("f.packName"), value: p.name, required: true, hint: t("f.packNameHint") },
+        { k: "size", label: t("f.packSize", { unit: it.unit || t("f.unitWord") }), type: "number", value: p.size, required: true },
+        { k: "barcode", label: t("f.barcode"), value: p.barcode || "" },
+        { k: "price", label: t("f.packPrice"), type: "number", value: p.price },
+        ...(packId
+          ? [{ k: "remove", label: t("f.packRemove"), type: "select", value: "no", options: [["no", t("f.no")], ["yes", t("f.packRemoveYes")]] }]
+          : []),
+      ],
+    );
+  if (!f) return;
+  if (f.remove == "yes") {
+    await store.deletePack(packId);
+    return toast(t("msg.deleted"));
+  }
+  await store.savePack(packId || null, itemId, f);
+  toast(t("msg.saved"));
+}
+
 const A = {
+  addPack: (el) => packForm(el.dataset.id),
+  editPack: (el) => packForm(el.dataset.item, el.dataset.id),
+  async lotPrice(el) {
+    if (!needWrite()) return;
+    const it = state.items.find((x) => x.id == el.dataset.item),
+      lot = state.lots.find((l) => l.item_id == it.id && l.expiry == el.dataset.exp),
+      f = await form(
+        t("title.lotPrice", { name: it.name, d: dateText(lot.expiry) }),
+        [{ k: "price", label: t("f.lotPrice", { p: fmt(it.price) }), type: "number", value: lot.price ?? "", hint: t("f.lotPriceHint") }],
+      );
+    if (!f) return;
+    await store.setLotPrice(it.id, lot.expiry, f.price === "" ? null : Math.max(0, +f.price));
+    toast(t("msg.saved"));
+  },
+  async allowNotes() {
+    if ((await Notification.requestPermission()) == "granted") expiryNote(true);
+    render();
+  },
   addItem: (el) => itemForm(null, el.dataset.code),
   editItem: (el) => itemForm(el.dataset.id),
   async delItem(el) {
@@ -338,6 +419,7 @@ const A = {
   posInc: (el) => till.inc(el.dataset.id, 1),
   posDec: (el) => till.inc(el.dataset.id, -1),
   posDel: (el) => till.remove(el.dataset.id),
+  posCut: (el) => till.toggleCut(el.dataset.id),
   posClear: () => till.clear(),
   posMethod: (el) => till.setMethod(el.dataset.m),
   posQuick: (el) => till.quick(el.dataset.v),
@@ -450,8 +532,14 @@ const INPUT = {
     $("#tb").innerHTML = invRows(state);
   },
   conv,
+  // Checkboxes, number boxes (data-num) and one exchange rate (data-cur).
   async setting(el) {
-    await store.setSetting(el.dataset.key, el.checked);
+    const k = el.dataset.key;
+    let v = el.type == "checkbox" ? el.checked : el.dataset.num ? +el.value : el.value;
+    if (k == "vat_rate" && !(v >= 0 && v <= 100)) return toast(t("err.vatRate"), true);
+    if (el.dataset.cur) v = { ...(state.settings.rates || {}), [el.dataset.cur]: Math.max(0, +el.value || 0) || undefined };
+    await store.setSetting(k, v);
+    toast(t("msg.saved"));
   },
   async importCsv(el) {
     const f = el.files[0];
@@ -466,6 +554,13 @@ const INPUT = {
   invFilter(el) {
     invUi.f = el.value;
     $("#tb").innerHTML = invRows(state);
+  },
+  dashCur(el) {
+    dashUi.cur = el.value;
+    try {
+      localStorage.dashCur = el.value;
+    } catch {}
+    render();
   },
   invSort(el) {
     invUi.s = el.value;
@@ -502,7 +597,7 @@ document.addEventListener("input", (ev) => {
 document.addEventListener("change", (ev) => {
   const k = ev.target.dataset?.input;
   if (
-    ["setting", "importCsv", "lang", "invFilter", "invSort", "scanMode"].includes(k) ||
+    ["setting", "importCsv", "lang", "invFilter", "invSort", "scanMode", "dashCur"].includes(k) ||
     (k == "conv" && ev.target.tagName == "SELECT")
   )
     run(INPUT[k], ev.target);

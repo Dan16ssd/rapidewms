@@ -2,6 +2,7 @@ import { E, fmt, num, dateText, expiryNote } from "../lib/util.js";
 import { t } from "../i18n/index.js";
 import { isOwner } from "../data/store.js";
 import { status } from "../lib/expiry.js";
+import { SIGN } from "../lib/rates.js";
 
 // q: search text. f: all | consumable | durable | soon | expired. s: sort order (SORTS)
 export const ui = { q: "", f: "all", s: "name" };
@@ -46,16 +47,29 @@ export function rows(s) {
       e = next.get(i.id),
       td = (j, v, cls) => `<td data-l="${l[j]}"${cls ? ` class="${cls}"` : ""}>${v}</td>`,
       kind = i.kind == "consumable" ? "consumable" : "durable";
-    const name = `${E(i.name)} <span class="tag ${kind}">${t("kind." + kind)}</span>${
+    // Its packs ("Carton × 24 · ₭210,000"); the owner taps one to change it.
+    const packs = s.packs
+      .filter((p) => p.item_id == i.id)
+      .map(
+        (p) =>
+          `<${isOwner() ? `button class="tag pk" data-act="editPack" data-item="${id}" data-id="${E(p.id)}"` : 'span class="tag"'}>${E(
+            p.name,
+          )} × ${num(p.size)} · ${fmt(p.price)}</${isOwner() ? "button" : "span"}>`,
+      )
+      .join(" ");
+    const name = `${E(i.name)} <span class="tag ${kind}">${t("kind." + kind)}</span>${packs ? "<br>" + packs : ""}${
       e
         ? `<br><small class="${status(e) == "ok" ? "mut" : "warn"}">${t("exp.short")} ${dateText(e)}${expiryNote(e)}</small>`
         : ""
     }`;
+    const cost =
+      fmt(i.cost) +
+      (i.cost_currency && i.cost_currency != "LAK" ? `<br><small class="mut">${SIGN[i.cost_currency]}${num(i.cost_orig)}</small>` : "");
     return `<tr>${td(0, `<b>${E(i.sku)}</b>`)}${td(1, name, "nm")}${td(2, E(i.category))}${td(
       3,
-      num(i.qty) + (low ? " ⚠" : ""),
+      num(i.qty) + (i.unit ? " " + E(i.unit) : "") + (low ? " ⚠" : ""),
       low ? "warn" : "",
-    )}${td(4, num(i.min_qty))}${td(5, fmt(i.cost))}${td(6, fmt(i.price))}${td(
+    )}${td(4, num(i.min_qty))}${td(5, cost)}${td(6, fmt(i.price))}${td(
       7,
       fmt(i.qty * i.cost),
     )}<td class="act"><button class="g" data-act="adj" data-id="${id}" data-dir="1" title="${E(
@@ -66,6 +80,8 @@ export function rows(s) {
       isOwner()
         ? ` <button class="g" data-act="delItem" data-id="${id}" title="${E(t("tip.delete"))}">🗑</button>`
         : ""
+    }${
+      isOwner() ? ` <button class="g" data-act="addPack" data-id="${id}" title="${E(t("tip.addPack"))}">📦</button>` : ""
     }</td></tr>`;
   }).join("");
 }
